@@ -72,14 +72,21 @@ An AI chatbot powered by Gemini AI that:
 # 📂 Project Structure
 
 ```bash
-src/
+vaidya-mithra/
 │
-├── App.jsx
-├── index.css
-├── main.jsx
+├── index.html
+├── package.json
+├── postcss.config.js
+├── tailwind.config.js
+├── vite.config.js
+├── README.md
+|
+└── src/
+    │
+    ├── main.jsx
+    ├── App.jsx
+    └── index.css
 ```
-
----
 
 # ⚙️ Environment Variables
 
