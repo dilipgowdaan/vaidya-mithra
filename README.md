@@ -169,11 +169,13 @@ Always consult a qualified healthcare professional for medical concerns.
 # 👨‍💻 Team
 
 ## Dilip Kumar A N
-- Email: dilipkumaran.ec23@rvce.edu.in
+- Email: dilipgowda7259@gmail.com
+- Contact: 7259447817
 
 ## Arya B V
-- Email: aryabv.ec23@rvce.edu.in
-
+- Email: aryabvarya18@gmail.com
+- Contact: 8050141198
+  
 ---
 
 # 📌 Future Enhancements
