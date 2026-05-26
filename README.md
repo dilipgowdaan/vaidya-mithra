@@ -12,6 +12,10 @@ The application is built using **React**, **Firebase**, **Tailwind CSS**, and **
 
 ---
 
+# 🌐 Live Demo
+
+🔗 [Open Vaidya Mithra](https://vaidya-mithra-app.vercel.app)
+
 # 🚀 Features
 
 ## 🔍 AI Symptom Prediction
