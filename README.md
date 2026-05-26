@@ -185,7 +185,7 @@ Always consult a qualified healthcare professional for medical concerns.
 
 # 📄 License
 
-Developed and maintained by the Vaidya Mithra Team.
+Developed and maintained by the Vaidya Mithra Team(Contacts available above).
 
 This project is intended for academic and educational purposes only. All rights reserved © 2025 Vaidya Mithra Team.
 
