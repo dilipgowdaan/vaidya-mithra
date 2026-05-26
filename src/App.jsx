@@ -632,7 +632,7 @@ const ContactPage = () => {
         </p>
 
         {/* This grid is now horizontal on larger screens */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4"> {/* MODIFIED: Added lg:grid-cols-4 */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4"> {/* MODIFIED: Added lg:grid-cols-4 */}
           {TEAM_CONTACTS.map((person) => (
             <div 
               key={person.name} 
