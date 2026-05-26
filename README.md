@@ -119,7 +119,7 @@ VITE_VAIDYA_MITHRA_GEMINI_KEY=YOUR_GEMINI_API_KEY
 ## Clone Repository
 
 ```bash
-git clone https://github.com/your-username/vaidya-mithra.git
+git clone https://github.com/dilipgowdaan/vaidya-mithra.git
 ```
 
 ## Navigate to Project
