@@ -612,10 +612,8 @@ const DocBotPage = ({ db, userId, auth, authReady, appId }) => { // <-- Added ap
  */
 const ContactPage = () => {
   const TEAM_CONTACTS = useMemo(() => [
-    { name: "Divya M C", phone: "9606390229", email: "divyamc2006@gmail.com" },
-    { name: "Afreen Begam", phone: "8088656062", email: "begamafrern8088@gmail.com" },
-    { name: "Pallavi D L", phone: "8197609640", email: "pallavidl361@gmail.com" },
-    { name: "Chinmayi.R.Kumar",  phone: "8792564277", email: "chinmayiravi79@gmail.com" },
+    { name: "Dilip Kumar A N", phone: "7259447817", email: "dilipkumaran.ec23@rvce.edu.in" },
+    { name: "Arya B V", phone: "8050141198", email: "aryabv.ec23@rvce.edu.in" },
   ], []);
 
   return (
