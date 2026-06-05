@@ -1,21 +1,55 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-// --- Firebase SDK Imports ---
 import { initializeApp } from 'firebase/app';
-import { getAuth, signInAnonymously, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut, onAuthStateChanged, updateProfile } from 'firebase/auth'; 
-import { getFirestore, collection, doc, setDoc, getDoc, updateDoc, deleteDoc, query, orderBy, limit, onSnapshot, serverTimestamp } from 'firebase/firestore';
+import { 
+  getAuth, 
+  createUserWithEmailAndPassword, 
+  signInWithEmailAndPassword, 
+  signOut, 
+  onAuthStateChanged,
+  updateProfile
+} from 'firebase/auth';
+import { 
+  getFirestore, 
+  collection, 
+  doc, 
+  setDoc, 
+  getDoc,
+  deleteDoc,
+  updateDoc,
+  query, 
+  orderBy, 
+  limit, 
+  onSnapshot, 
+  serverTimestamp, 
+  setLogLevel 
+} from 'firebase/firestore';
 
-// --- API & Env Configuration ---
-// Safely retrieving Vite environment variables
 const getEnvVar = (key) => {
-  try { return import.meta.env[key]; } catch(e) { return ""; }
+  try { return import.meta.env[key]; } catch(e) { return undefined; }
 };
+
 const apiKey = getEnvVar('VITE_VAIDYA_MITHRA_GEMINI_KEY') || "";
 const GEMINI_API_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
+
+// Global Firebase Setup
+let app, auth, db, globalAppId;
+try {
+  const fbConfigStr = typeof __firebase_config !== 'undefined' ? __firebase_config : getEnvVar('VITE_FIREBASE_CONFIG');
+  if (fbConfigStr && fbConfigStr !== '{}') {
+    const config = JSON.parse(fbConfigStr);
+    app = initializeApp(config);
+    auth = getAuth(app);
+    db = getFirestore(app);
+    globalAppId = typeof __app_id !== 'undefined' ? __app_id : (config.appId || 'default-app-id');
+  }
+} catch (e) {
+  console.error("Firebase Global Initialization Error:", e);
+}
 
 const JSON_SCHEMA = {
   type: "OBJECT",
   properties: {
-    emergency_flag: { type: "BOOLEAN", description: "True if symptoms indicate a severe emergency." },
+    emergency_flag: { type: "BOOLEAN", description: "True if symptoms indicate severe emergency." },
     predictions: {
       type: "ARRAY",
       items: {
@@ -39,6 +73,7 @@ const ALL_SYMPTOMS_CATEGORIZED = {
   Skin: ['Rash', 'Itching', 'Hives', 'Dry Skin', 'Jaundice', 'Bruising', 'Change in Mole appearance', 'Redness/Inflammation'],
   Musculoskeletal: ['Joint Pain', 'Muscle Pain', 'Back Pain', 'Stiffness', 'Swollen Joints', 'Limited Range of Motion', 'Numbness/Tingling'],
 };
+
 const SYMPTOM_CATEGORIES = Object.keys(ALL_SYMPTOMS_CATEGORIZED);
 
 const Icon = ({ name, size = 20, color = 'currentColor', className = '' }) => {
@@ -66,19 +101,17 @@ const Icon = ({ name, size = 20, color = 'currentColor', className = '' }) => {
     menu: <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/></svg>,
     search: <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>,
     checkCircle: <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>,
-    clock: <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>,
-    plus: <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>,
-    lightbulb: <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M15.09 16.05A6.47 6.47 0 0 1 12 21.03a6.47 6.47 0 0 1-3.09-4.98c0-.62.07-1.23.21-1.81l.15-.62.62-.15c.58-.14 1.19-.21 1.81-.21h0c.62 0 1.23.07 1.81.21l.62.15.15.62c.14.58.21 1.19.21 1.81zM12 21.03V22m0-11.03V4a2 2 0 1 1 4 0v2.03M8 6.03V4a2 2 0 1 0-4 0v2.03m5.5 10.44C13.5 16 13 14.83 13 14c0-1.04.2-1.9.5-2.65M10.5 16c.5.5 1 1.17 1 2 0 1.04-.2 1.9-.5 2.65m-2-12.09c.39-.28.8-.53 1.24-.75M14.76 3.18c.44.22.85.47 1.24.75m-6 12.09c-.39.28-.8.53-1.24.75M9.24 3.18c-.44.22-.85.47-1.24.75M12 6.03V4m0 17.03V21m-3.5-13.44c-.5.5-1 1.17-1 2 0 1.04.2 1.9.5 2.65m6.5-2.65c.5.5 1 1.17 1 2 0 1.04-.2 1.9-.5 2.65"/></svg>
+    clock: <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
   };
   return icons[name] || <div style={{ width: size, height: size }}>?</div>;
 };
 
-const Logo = ({ className = "" }) => (
-  <div className={`flex items-center flex-shrink-0 ${className}`}>
-    <div className="p-1.5 bg-gradient-to-br from-blue-600 to-indigo-600 rounded-xl shadow-md">
+const Logo = () => (
+  <div className="flex items-center flex-shrink-0">
+    <div className="p-1 bg-blue-600 rounded-lg shadow-md">
       <Icon name="stethoscope" size={24} color="white" />
     </div>
-    <span className="text-2xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-blue-900 to-indigo-800 ml-3 tracking-tight">
+    <span className="text-2xl font-bold text-blue-800 ml-3 tracking-tight">
       Vaidya<span className="text-blue-600 font-extrabold">Mithra</span>
     </span>
   </div>
@@ -97,20 +130,14 @@ const SkeletonCard = () => (
   </div>
 );
 
-const Footer = ({ className = '' }) => (
-  <div id="footer" className={`bg-white/70 backdrop-blur-sm border-t border-gray-200 py-4 px-4 sm:px-8 ${className}`}>
+const Footer = () => (
+  <div id="footer" className="bg-white/70 backdrop-blur-sm border-t border-gray-200 py-4 px-4 sm:px-8">
     <p className="text-xs text-gray-600 text-center max-w-4xl mx-auto mb-2">
-      <strong>Disclaimer:</strong> This application is for informational and educational purposes only and is <strong>NOT</strong> a substitute for professional medical advice, diagnosis, or treatment. Always seek the advice of your physician with any questions you may have regarding a medical condition.
+      <strong>Disclaimer:</strong> This application is for informational and educational purposes only and is <strong>NOT</strong> a substitute for professional medical advice, diagnosis, or treatment.
     </p>
-    <p className="text-xs text-gray-500 text-center">
-      &copy; {new Date().getFullYear()} Vaidya Mithra. All rights reserved.
-    </p>
+    <p className="text-xs text-gray-500 text-center">&copy; {new Date().getFullYear()} Vaidya Mithra. All rights reserved.</p>
   </div>
 );
-
-// =================================================================================
-// --- AUTHENTICATION SCREEN ---
-// =================================================================================
 
 const AuthScreen = ({ auth, db, appId }) => {
   const [isLogin, setIsLogin] = useState(true);
@@ -126,23 +153,26 @@ const AuthScreen = ({ auth, db, appId }) => {
     setError('');
     setLoading(true);
 
-    // Hardcoded Admin Override for Demonstration
+    // Hardcoded Admin Override
     if (email === 'admin@gmail.com' && password === 'Admin@123') {
-        try {
-            await signInWithEmailAndPassword(auth, email, password);
-        } catch (err) {
-            if (err.code === 'auth/user-not-found' || err.code === 'auth/invalid-credential') {
-                const userCred = await createUserWithEmailAndPassword(auth, email, password);
-                await updateProfile(userCred.user, { displayName: 'Super Admin' });
-                await setDoc(doc(db, 'artifacts', appId, 'users', userCred.user.uid, 'profile', 'data'), {
-                    uid: userCred.user.uid, email, name: 'Super Admin', role: 'admin', status: 'approved', createdAt: serverTimestamp()
-                });
-            } else {
-                setError(err.message);
-            }
-        }
-        setLoading(false);
-        return;
+      try {
+        const userCred = await signInWithEmailAndPassword(auth, email, password);
+        await setDoc(doc(db, 'artifacts', appId, 'users', userCred.user.uid, 'profile', 'data'), {
+          uid: userCred.user.uid, email, name: 'Super Admin', role: 'admin', status: 'approved', createdAt: serverTimestamp()
+        }, { merge: true });
+      } catch (err) {
+        if (err.code === 'auth/user-not-found' || err.code === 'auth/invalid-credential' || err.code === 'auth/invalid-login-credentials') {
+          try {
+            const userCred = await createUserWithEmailAndPassword(auth, email, password);
+            await updateProfile(userCred.user, { displayName: 'Super Admin' });
+            await setDoc(doc(db, 'artifacts', appId, 'users', userCred.user.uid, 'profile', 'data'), {
+              uid: userCred.user.uid, email, name: 'Super Admin', role: 'admin', status: 'approved', createdAt: serverTimestamp()
+            });
+          } catch (createErr) { setError(createErr.message); }
+        } else { setError(err.message); }
+      }
+      setLoading(false);
+      return;
     }
 
     try {
@@ -153,24 +183,22 @@ const AuthScreen = ({ auth, db, appId }) => {
         const user = userCredential.user;
         await updateProfile(user, { displayName: name });
         
-        // Doctors and attenders require admin approval
         const status = role === 'patient' ? 'approved' : 'pending';
         
         await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'profile', 'data'), {
           uid: user.uid, email: user.email, name, role, status, createdAt: serverTimestamp()
         });
 
-        // Add to pending queue if needed
         if (status === 'pending') {
-            await setDoc(doc(db, 'artifacts', appId, 'pending_users', user.uid), {
-                uid: user.uid, email: user.email, name, role, status: 'pending', createdAt: serverTimestamp()
-            });
+          // Write to pending queue
+          await setDoc(doc(db, 'artifacts', appId, 'pending_users', user.uid), {
+            uid: user.uid, email: user.email, name, role, status: 'pending', createdAt: serverTimestamp()
+          });
         }
       }
     } catch (err) {
-      console.error("Auth Error:", err);
       if (err.code === 'auth/operation-not-allowed') {
-        setError("Email/Password auth is disabled. Enable it in your Firebase Console under Authentication > Sign-in method.");
+        setError("Email/Password auth is disabled in Firebase. Enable it in Authentication > Sign-in method.");
       } else {
         setError(err.message.replace("Firebase: ", ""));
       }
@@ -182,17 +210,11 @@ const AuthScreen = ({ auth, db, appId }) => {
   return (
     <div className="min-h-screen flex items-center justify-center bg-[radial-gradient(ellipse_at_top_right,_var(--tw-gradient-stops))] from-blue-100 via-white to-cyan-50 p-4">
       <div className="absolute inset-0 bg-grid-slate-100/[0.04] bg-[size:32px_32px]"></div>
-      
       <div className="max-w-md w-full bg-white/80 backdrop-blur-xl rounded-3xl shadow-2xl border border-white/50 p-8 z-10 relative overflow-hidden animate-fadeInUp">
         <div className="absolute top-0 left-0 w-full h-2 bg-gradient-to-r from-blue-500 via-indigo-500 to-cyan-400"></div>
-        <div className="flex justify-center mb-8"><Logo className="scale-110" /></div>
-        
-        <h2 className="text-3xl font-extrabold text-gray-900 text-center mb-2 tracking-tight">
-          {isLogin ? 'Welcome Back' : 'Create Account'}
-        </h2>
-        <p className="text-gray-500 text-center mb-6">
-          {isLogin ? 'Sign in to access your healthcare portal' : 'Join Vaidya Mithra today'}
-        </p>
+        <div className="flex justify-center mb-8"><Logo /></div>
+        <h2 className="text-3xl font-extrabold text-gray-900 text-center mb-2 tracking-tight">{isLogin ? 'Welcome Back' : 'Create Account'}</h2>
+        <p className="text-gray-500 text-center mb-6">{isLogin ? 'Sign in to access your portal' : 'Join Vaidya Mithra today'}</p>
 
         <div className="flex p-1 bg-gray-100/80 rounded-xl mb-6">
           <button onClick={() => {setIsLogin(true); setError('');}} className={`flex-1 py-2 text-sm font-semibold rounded-lg transition-all duration-300 ${isLogin ? 'bg-white text-blue-700 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}>Sign In</button>
@@ -210,37 +232,21 @@ const AuthScreen = ({ auth, db, appId }) => {
             <>
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Full Name</label>
-                <div className="relative">
-                  <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none"><Icon name="user" size={18} className="text-gray-400" /></div>
-                  <input type="text" value={name} onChange={e=>setName(e.target.value)} required className="w-full pl-10 pr-4 py-3 bg-white/50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none" placeholder="John Doe" />
-                </div>
+                <div className="relative"><div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none"><Icon name="user" size={18} className="text-gray-400" /></div><input type="text" value={name} onChange={e=>setName(e.target.value)} required className="w-full pl-10 pr-4 py-3 bg-white/50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none" placeholder="John Doe" /></div>
               </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Select Role</label>
-                <div className="relative">
-                  <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none"><Icon name="users" size={18} className="text-gray-400" /></div>
-                  <select value={role} onChange={e=>setRole(e.target.value)} className="w-full pl-10 pr-4 py-3 bg-white/50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none appearance-none">
-                    <option value="patient">Patient</option>
-                    <option value="doctor">Doctor</option>
-                    <option value="attender">Attender</option>
-                  </select>
-                </div>
+                <div className="relative"><div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none"><Icon name="users" size={18} className="text-gray-400" /></div><select value={role} onChange={e=>setRole(e.target.value)} className="w-full pl-10 pr-4 py-3 bg-white/50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none appearance-none"><option value="patient">Patient</option><option value="doctor">Doctor</option><option value="attender">Attender</option></select></div>
               </div>
             </>
           )}
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Email Address</label>
-            <div className="relative">
-              <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none"><Icon name="mail" size={18} className="text-gray-400" /></div>
-              <input type="email" value={email} onChange={e=>setEmail(e.target.value)} required className="w-full pl-10 pr-4 py-3 bg-white/50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none" placeholder="name@example.com" />
-            </div>
+            <div className="relative"><div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none"><Icon name="mail" size={18} className="text-gray-400" /></div><input type="email" value={email} onChange={e=>setEmail(e.target.value)} required className="w-full pl-10 pr-4 py-3 bg-white/50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none" placeholder="name@example.com" /></div>
           </div>
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Password</label>
-            <div className="relative">
-              <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none"><Icon name="shield" size={18} className="text-gray-400" /></div>
-              <input type="password" value={password} onChange={e=>setPassword(e.target.value)} required minLength={6} className="w-full pl-10 pr-4 py-3 bg-white/50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none" placeholder="••••••••" />
-            </div>
+            <div className="relative"><div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none"><Icon name="shield" size={18} className="text-gray-400" /></div><input type="password" value={password} onChange={e=>setPassword(e.target.value)} required minLength={6} className="w-full pl-10 pr-4 py-3 bg-white/50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none" placeholder="••••••••" /></div>
           </div>
           <button type="submit" disabled={loading} className="w-full mt-2 py-3.5 px-4 text-white font-bold rounded-xl shadow-lg transition-all duration-300 transform hover:-translate-y-0.5 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 flex items-center justify-center disabled:opacity-70">
             {loading ? 'Processing...' : (isLogin ? 'Sign In to Portal' : 'Create Account')}
@@ -259,26 +265,17 @@ const PendingApprovalScreen = ({ auth }) => (
         <Icon name="clock" size={32} className="text-amber-600" />
       </div>
       <h2 className="text-2xl font-extrabold text-gray-900 mb-3">Account Pending Review</h2>
-      <p className="text-gray-600 mb-8 leading-relaxed">
-        Your registration as a healthcare professional has been received. Please wait while administration verifies your credentials. You will be granted access once approved.
-      </p>
-      <button onClick={() => signOut(auth)} className="px-6 py-3 bg-gray-100 text-gray-700 font-bold rounded-xl hover:bg-gray-200 transition">
-        Sign Out
-      </button>
+      <p className="text-gray-600 mb-8 leading-relaxed">Your registration as a healthcare professional has been received. Please wait while administration verifies your credentials. You will be granted access automatically once approved.</p>
+      <button onClick={() => signOut(auth)} className="px-6 py-3 bg-gray-100 text-gray-700 font-bold rounded-xl hover:bg-gray-200 transition">Sign Out</button>
     </div>
   </div>
 );
-
-// =================================================================================
-// --- DYNAMIC NAVBAR WITH NOTIFICATIONS ---
-// =================================================================================
 
 const NavBar = ({ currentPage, onNavigate, userRole, auth, db, userId, appId }) => {
     const [isMenuOpen, setIsMenuOpen] = useState(false);
     const [notifications, setNotifications] = useState([]);
     const [showNotifMenu, setShowNotifMenu] = useState(false);
-    
-    // Patient Notifications Listener
+
     useEffect(() => {
         if (!userId || !db || !appId || userRole !== 'patient') return;
         const q = query(collection(db, `artifacts/${appId}/users/${userId}/notifications`), orderBy('timestamp', 'desc'), limit(10));
@@ -290,9 +287,9 @@ const NavBar = ({ currentPage, onNavigate, userRole, auth, db, userId, appId }) 
     };
 
     const getNavItems = () => {
-      if (userRole === 'admin') return [{ id: "admin-home", name: "Dashboard", icon: "activity" }];
-      if (userRole === 'doctor') return [{ id: "doctor-home", name: "My Queue", icon: "users" }];
-      if (userRole === 'attender') return [{ id: "attender-home", name: "Triage & Scheduling", icon: "calendar" }];
+      if (userRole === 'doctor') return [{ id: "doctor-home", name: "Dashboard", icon: "home" }, { id: "doctor-history", name: "My Patients", icon: "users" }];
+      if (userRole === 'attender') return [{ id: "attender-home", name: "Queue", icon: "home" }, { id: "attender-history", name: "History", icon: "history" }];
+      if (userRole === 'admin') return [{ id: "admin-home", name: "Approvals", icon: "shield" }, { id: "admin-history", name: "System Log", icon: "activity" }];
       return [
           { id: "home", name: "Home", icon: "home" },
           { id: "appointments", name: "Appointments", icon: "calendar" },
@@ -314,17 +311,14 @@ const NavBar = ({ currentPage, onNavigate, userRole, auth, db, userId, appId }) 
                         <Logo />
                     </a>
                     
-                    <div className="hidden md:flex items-center space-x-1">
-                        {navItems.map((item) => {
-                            const isActive = currentPage === item.id;
-                            return (
-                                <button key={item.id} onClick={() => handleNavigation(item.id)} className={`px-4 py-2 rounded-xl text-sm font-semibold flex items-center transition duration-150 ${isActive ? 'bg-blue-50 text-blue-700' : 'text-gray-600 hover:bg-gray-50'}`}>
-                                    <Icon name={item.icon} size={18} className="mr-2" /> {item.name}
-                                </button>
-                            );
-                        })}
+                    <div className="hidden md:flex items-center space-x-2">
+                        {navItems.map((item) => (
+                            <a key={item.id} href="#" onClick={(e) => { e.preventDefault(); handleNavigation(item.id); }} className={`px-3 py-2 rounded-xl text-sm font-semibold flex items-center transition duration-150 ${currentPage === item.id ? 'bg-blue-50 text-blue-700' : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'}`}>
+                                <Icon name={item.icon} size={18} className="mr-2" color="currentColor" />{item.name}
+                            </a>
+                        ))}
                         
-                        {/* Notification Bell */}
+                        {/* Patient Notification Bell */}
                         {userRole === 'patient' && (
                             <div className="relative ml-2">
                                 <button onClick={() => setShowNotifMenu(!showNotifMenu)} className="p-2 text-gray-600 hover:bg-gray-100 rounded-full relative">
@@ -348,27 +342,28 @@ const NavBar = ({ currentPage, onNavigate, userRole, auth, db, userId, appId }) 
                             </div>
                         )}
 
-                        <div className="w-px h-6 bg-gray-200 mx-3"></div>
-                        <button onClick={() => signOut(auth)} className="p-2 text-gray-500 hover:text-red-600 hover:bg-red-50 rounded-xl transition" title="Sign Out">
-                          <Icon name="logOut" size={20} />
+                        <div className="w-px h-6 bg-gray-200 mx-2"></div>
+                        <button onClick={() => signOut(auth)} className="px-3 py-2 rounded-xl text-sm font-semibold flex items-center text-red-600 hover:bg-red-50 transition duration-150">
+                          <Icon name="logOut" size={18} className="mr-2" /> Logout
                         </button>
                     </div>
                     
-                    <button className="md:hidden p-2 text-gray-700 hover:bg-gray-100 rounded-lg" onClick={() => setIsMenuOpen(!isMenuOpen)}>
+                    <button className="md:hidden p-2 rounded-lg text-gray-700 hover:bg-gray-100 transition" onClick={() => setIsMenuOpen(!isMenuOpen)}>
                          {isMenuOpen ? <Icon name="x" size={24} /> : <Icon name="menu" size={24} />}
                     </button>
                 </div>
             </div>
 
             {isMenuOpen && (
-                <div className="md:hidden absolute top-16 left-0 w-full bg-white/95 backdrop-blur-lg shadow-xl border-t border-gray-200/80">
+                <div className="md:hidden absolute top-16 left-0 w-full bg-white/95 backdrop-blur-lg shadow-xl border-t border-gray-200/80 transform origin-top transition-all duration-300 ease-out" style={{ maxHeight: 'calc(100vh - 4rem)' }}>
                     <div className="flex flex-col p-4 space-y-2">
                         {navItems.map((item) => (
-                            <button key={item.id} onClick={() => handleNavigation(item.id)} className={`px-4 py-3 text-left rounded-xl text-lg font-medium flex items-center ${currentPage === item.id ? 'bg-blue-50 text-blue-700' : 'text-gray-700'}`}>
-                                <Icon name={item.icon} size={20} className="mr-3" /> {item.name}
-                            </button>
+                            <a key={item.id} href="#" onClick={(e) => { e.preventDefault(); handleNavigation(item.id); }} className={`px-4 py-3 rounded-xl text-lg font-medium flex items-center transition duration-150 ${currentPage === item.id ? 'bg-blue-50 text-blue-700' : 'text-gray-700 hover:bg-gray-50'}`}>
+                                <Icon name={item.icon} size={20} className="mr-3" color="currentColor" /> {item.name}
+                            </a>
                         ))}
-                        <button onClick={() => signOut(auth)} className="px-4 py-3 text-left rounded-xl text-lg font-medium flex items-center text-red-600 hover:bg-red-50">
+                        <div className="h-px w-full bg-gray-200 my-2"></div>
+                        <button onClick={() => signOut(auth)} className="px-4 py-3 rounded-xl text-lg font-medium flex items-center text-red-600 hover:bg-red-50 transition duration-150 text-left">
                           <Icon name="logOut" size={20} className="mr-3" /> Sign Out
                         </button>
                     </div>
@@ -377,10 +372,6 @@ const NavBar = ({ currentPage, onNavigate, userRole, auth, db, userId, appId }) 
         </nav>
     );
 };
-
-// =================================================================================
-// --- DASHBOARDS FOR ALL ROLES ---
-// =================================================================================
 
 const StatCard = ({ title, value, icon, colorClass }) => (
   <div className="bg-white/80 backdrop-blur-lg rounded-2xl p-6 border border-gray-200/50 shadow-sm">
@@ -392,21 +383,20 @@ const StatCard = ({ title, value, icon, colorClass }) => (
 );
 
 const AppointmentBadge = ({ status }) => {
-    const styles = {
-        requested: 'bg-yellow-100 text-yellow-800',
-        scheduled: 'bg-blue-100 text-blue-800',
-        ready: 'bg-purple-100 text-purple-800',
-        completed: 'bg-green-100 text-green-800'
-    };
+    const styles = { requested: 'bg-yellow-100 text-yellow-800', scheduled: 'bg-blue-100 text-blue-800', ready: 'bg-purple-100 text-purple-800', completed: 'bg-green-100 text-green-800' };
     return <span className={`px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wide ${styles[status]}`}>{status}</span>;
 };
 
-// --- ADMIN DASHBOARD ---
+// --- ADMIN PAGES ---
 const AdminDashboard = ({ db, appId }) => {
     const [pendingUsers, setPendingUsers] = useState([]);
     useEffect(() => {
-        const q = query(collection(db, `artifacts/${appId}/pending_users`), orderBy('createdAt', 'desc'));
-        return onSnapshot(q, (snap) => setPendingUsers(snap.docs.map(d => ({id: d.id, ...d.data()}))));
+        // Simple query without orderBy to avoid index errors on new projects
+        const q = query(collection(db, `artifacts/${appId}/pending_users`));
+        return onSnapshot(q, (snap) => {
+            const users = snap.docs.map(d => ({id: d.id, ...d.data()}));
+            setPendingUsers(users.sort((a,b) => (b.createdAt?.seconds||0) - (a.createdAt?.seconds||0)));
+        });
     }, [db, appId]);
 
     const handleApprove = async (user) => {
@@ -417,16 +407,16 @@ const AdminDashboard = ({ db, appId }) => {
 
     return (
         <div className="p-4 sm:p-8 max-w-7xl mx-auto h-full animate-fadeInUp">
-            <h1 className="text-3xl font-extrabold text-gray-900 mb-8">Admin Control Center</h1>
-            <h3 className="font-bold text-lg mb-4 text-blue-800">Pending Approvals</h3>
+            <h1 className="text-3xl font-extrabold text-gray-900 mb-8">Admin Approvals</h1>
+            <h3 className="font-bold text-lg mb-4 text-blue-800">Pending Registrations</h3>
             {pendingUsers.length === 0 ? (
-                <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6 text-center"><p>No pending approvals.</p></div>
+                <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-8 text-center text-gray-500">No pending approvals at the moment.</div>
             ) : (
                 <div className="grid gap-4">
                     {pendingUsers.map(user => (
                         <div key={user.id} className="bg-white p-5 rounded-2xl border border-gray-200 shadow-sm flex justify-between items-center">
-                            <div><p className="font-bold">{user.name}</p><p className="text-sm text-gray-500 uppercase">{user.role}</p></div>
-                            <button onClick={() => handleApprove(user)} className="px-4 py-2 bg-green-600 text-white font-bold rounded-xl hover:bg-green-700">Approve</button>
+                            <div><p className="font-bold text-lg">{user.name}</p><p className="text-sm text-gray-500 uppercase font-semibold">{user.role} | {user.email}</p></div>
+                            <button onClick={() => handleApprove(user)} className="px-5 py-2.5 bg-green-600 text-white font-bold rounded-xl hover:bg-green-700 shadow-sm transition">Approve</button>
                         </div>
                     ))}
                 </div>
@@ -435,7 +425,34 @@ const AdminDashboard = ({ db, appId }) => {
     );
 };
 
-// --- ATTENDER DASHBOARD ---
+const AdminHistory = ({ db, appId }) => {
+    const [appointments, setAppointments] = useState([]);
+    useEffect(() => {
+        return onSnapshot(collection(db, `artifacts/${appId}/appointments`), (snap) => {
+            setAppointments(snap.docs.map(d => ({id: d.id, ...d.data()})).sort((a,b) => (b.timestamp?.seconds||0) - (a.timestamp?.seconds||0)));
+        });
+    }, [db, appId]);
+
+    return (
+        <div className="p-4 sm:p-8 max-w-7xl mx-auto h-full animate-fadeInUp">
+            <h1 className="text-3xl font-extrabold text-gray-900 mb-8">System Activity Log</h1>
+            <div className="space-y-4">
+                {appointments.length === 0 ? <p className="text-gray-500">No system activity found.</p> : appointments.map(a => (
+                    <div key={a.id} className="bg-white p-5 rounded-2xl shadow-sm border border-gray-200 flex flex-col md:flex-row justify-between md:items-center gap-4">
+                        <div>
+                            <div className="flex items-center space-x-3 mb-1"><AppointmentBadge status={a.status} /><span className="text-sm text-gray-500">{new Date(a.timestamp?.seconds * 1000).toLocaleString()}</span></div>
+                            <p className="font-bold">Patient: {a.patientName} <span className="text-gray-400 font-normal">→ Doctor: {a.doctorName || 'Unassigned'}</span></p>
+                            <p className="text-sm text-gray-600">Reason: {a.reason}</p>
+                        </div>
+                        {a.status === 'completed' && <div className="text-sm bg-gray-50 p-3 rounded-lg border max-w-sm"><p className="font-semibold text-green-700">Notes:</p><p className="truncate">{a.doctorNotes}</p></div>}
+                    </div>
+                ))}
+            </div>
+        </div>
+    );
+};
+
+// --- ATTENDER PAGES ---
 const AttenderDashboard = ({ db, appId, userId }) => {
     const [appointments, setAppointments] = useState([]);
     const [doctors, setDoctors] = useState([]);
@@ -443,7 +460,9 @@ const AttenderDashboard = ({ db, appId, userId }) => {
     const [vitalsModal, setVitalsModal] = useState(null);
 
     useEffect(() => {
-        const unsubApt = onSnapshot(query(collection(db, `artifacts/${appId}/appointments`), orderBy('timestamp', 'desc')), (snap) => setAppointments(snap.docs.map(d => ({id: d.id, ...d.data()}))));
+        const unsubApt = onSnapshot(collection(db, `artifacts/${appId}/appointments`), (snap) => {
+            setAppointments(snap.docs.map(d => ({id: d.id, ...d.data()})).sort((a,b) => (b.timestamp?.seconds||0) - (a.timestamp?.seconds||0)));
+        });
         const unsubDoc = onSnapshot(collection(db, `artifacts/${appId}/approved_doctors`), (snap) => setDoctors(snap.docs.map(d => d.data())));
         return () => { unsubApt(); unsubDoc(); };
     }, [db, appId]);
@@ -466,41 +485,61 @@ const AttenderDashboard = ({ db, appId, userId }) => {
     return (
         <div className="p-4 sm:p-8 max-w-7xl mx-auto h-full animate-fadeInUp">
             <h1 className="text-3xl font-extrabold text-gray-900 mb-6">Attender Triage Hub</h1>
-            <div className="grid gap-4">
-                <h3 className="font-bold text-lg text-blue-800">New Requests</h3>
-                {appointments.filter(a => a.status === 'requested').map(a => (
-                    <div key={a.id} className="bg-white p-5 rounded-2xl border border-gray-200 flex justify-between items-center">
-                        <div><p className="font-bold">{a.patientName}</p><p className="text-sm">Reason: {a.reason}</p></div>
-                        <button onClick={() => setScheduleModal(a)} className="px-4 py-2 bg-blue-600 text-white font-bold rounded-xl">Schedule</button>
+            <div className="grid gap-6">
+                <div>
+                    <h3 className="font-bold text-lg text-blue-800 mb-3 border-b pb-2">New Requests (Needs Scheduling)</h3>
+                    <div className="space-y-3">
+                        {appointments.filter(a => a.status === 'requested').length === 0 ? <p className="text-sm text-gray-500">No new requests.</p> : appointments.filter(a => a.status === 'requested').map(a => (
+                            <div key={a.id} className="bg-white p-5 rounded-2xl border border-gray-200 shadow-sm flex flex-col md:flex-row justify-between md:items-center gap-4">
+                                <div><p className="font-bold text-lg">{a.patientName}</p><p className="text-sm text-gray-600">Reason: {a.reason}</p></div>
+                                <button onClick={() => setScheduleModal(a)} className="px-5 py-2 bg-blue-600 text-white font-bold rounded-xl shadow-sm hover:bg-blue-700 transition">Schedule</button>
+                            </div>
+                        ))}
                     </div>
-                ))}
-                <h3 className="font-bold text-lg text-purple-800 mt-4">Scheduled Arrivals</h3>
-                {appointments.filter(a => a.status === 'scheduled').map(a => (
-                    <div key={a.id} className="bg-white p-5 rounded-2xl border border-gray-200 flex justify-between items-center">
-                        <div><p className="font-bold">{a.patientName}</p><p className="text-sm">With {a.doctorName} at {a.time}</p></div>
-                        <button onClick={() => setVitalsModal(a)} className="px-4 py-2 bg-purple-600 text-white font-bold rounded-xl">Enter Vitals</button>
+                </div>
+                
+                <div>
+                    <h3 className="font-bold text-lg text-purple-800 mb-3 border-b pb-2 mt-4">Scheduled Arrivals (Needs Vitals)</h3>
+                    <div className="space-y-3">
+                        {appointments.filter(a => a.status === 'scheduled').length === 0 ? <p className="text-sm text-gray-500">No scheduled arrivals pending vitals.</p> : appointments.filter(a => a.status === 'scheduled').map(a => (
+                            <div key={a.id} className="bg-white p-5 rounded-2xl border border-gray-200 shadow-sm flex flex-col md:flex-row justify-between md:items-center gap-4">
+                                <div><p className="font-bold text-lg">{a.patientName}</p><p className="text-sm text-gray-600">With {a.doctorName} at {a.time} on {a.date}</p></div>
+                                <button onClick={() => setVitalsModal(a)} className="px-5 py-2 bg-purple-600 text-white font-bold rounded-xl shadow-sm hover:bg-purple-700 transition">Enter Vitals</button>
+                            </div>
+                        ))}
                     </div>
-                ))}
+                </div>
             </div>
 
-            {/* Modals for Attender */}
+            {/* Modals */}
             {scheduleModal && (
-                <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
-                    <form onSubmit={handleSchedule} className="bg-white p-6 rounded-3xl w-full max-w-md"><h3 className="font-bold text-xl mb-4">Schedule</h3>
+                <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+                    <form onSubmit={handleSchedule} className="bg-white p-8 rounded-3xl w-full max-w-md shadow-2xl animate-fadeInUp">
+                        <h3 className="font-bold text-2xl mb-6 text-gray-900">Schedule Patient</h3>
+                        <p className="mb-4 text-sm text-gray-600">Patient: <strong>{scheduleModal.patientName}</strong></p>
                         <div className="space-y-4">
-                            <select name="doctorId" required className="w-full p-3 border rounded-xl">{doctors.map(d => <option key={d.uid} value={d.uid}>{d.name}</option>)}</select>
-                            <input type="date" name="date" required className="w-full p-3 border rounded-xl"/>
-                            <input type="time" name="time" required className="w-full p-3 border rounded-xl"/>
+                            <select name="doctorId" required className="w-full p-3 border border-gray-300 rounded-xl outline-none focus:ring-2 focus:ring-blue-500">
+                                <option value="">Select Doctor...</option>
+                                {doctors.map(d => <option key={d.uid} value={d.uid}>{d.name}</option>)}
+                            </select>
+                            <input type="date" name="date" required className="w-full p-3 border border-gray-300 rounded-xl outline-none focus:ring-2 focus:ring-blue-500"/>
+                            <input type="time" name="time" required className="w-full p-3 border border-gray-300 rounded-xl outline-none focus:ring-2 focus:ring-blue-500"/>
                         </div>
-                        <div className="mt-6 flex justify-end space-x-3"><button type="button" onClick={()=>setScheduleModal(null)} className="px-4 py-2 text-gray-600">Cancel</button><button type="submit" className="px-4 py-2 bg-blue-600 text-white rounded-xl">Confirm</button></div>
+                        <div className="mt-8 flex justify-end space-x-3"><button type="button" onClick={()=>setScheduleModal(null)} className="px-5 py-2.5 text-gray-600 font-semibold hover:bg-gray-100 rounded-xl transition">Cancel</button><button type="submit" className="px-5 py-2.5 bg-blue-600 text-white font-bold rounded-xl shadow-md hover:bg-blue-700 transition">Confirm Booking</button></div>
                     </form>
                 </div>
             )}
             {vitalsModal && (
-                <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
-                    <form onSubmit={handleVitals} className="bg-white p-6 rounded-3xl w-full max-w-md"><h3 className="font-bold text-xl mb-4">Record Vitals</h3>
-                        <div className="space-y-4"><input type="text" name="bp" placeholder="BP (e.g. 120/80)" required className="w-full p-3 border rounded-xl"/><input type="number" name="hr" placeholder="Heart Rate" required className="w-full p-3 border rounded-xl"/><input type="number" name="glucose" placeholder="Glucose" className="w-full p-3 border rounded-xl"/></div>
-                        <div className="mt-6 flex justify-end space-x-3"><button type="button" onClick={()=>setVitalsModal(null)} className="px-4 py-2 text-gray-600">Cancel</button><button type="submit" className="px-4 py-2 bg-purple-600 text-white rounded-xl">Save</button></div>
+                <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+                    <form onSubmit={handleVitals} className="bg-white p-8 rounded-3xl w-full max-w-md shadow-2xl animate-fadeInUp">
+                        <h3 className="font-bold text-2xl mb-6 text-gray-900">Record Vitals</h3>
+                        <p className="mb-4 text-sm text-gray-600">Patient: <strong>{vitalsModal.patientName}</strong></p>
+                        <div className="space-y-4">
+                            <input type="text" name="bp" placeholder="Blood Pressure (e.g. 120/80)" required className="w-full p-3 border border-gray-300 rounded-xl outline-none focus:ring-2 focus:ring-purple-500"/>
+                            <input type="number" name="hr" placeholder="Heart Rate (BPM)" required className="w-full p-3 border border-gray-300 rounded-xl outline-none focus:ring-2 focus:ring-purple-500"/>
+                            <input type="number" name="glucose" placeholder="Glucose (mg/dL) - Optional" className="w-full p-3 border border-gray-300 rounded-xl outline-none focus:ring-2 focus:ring-purple-500"/>
+                        </div>
+                        <div className="mt-8 flex justify-end space-x-3"><button type="button" onClick={()=>setVitalsModal(null)} className="px-5 py-2.5 text-gray-600 font-semibold hover:bg-gray-100 rounded-xl transition">Cancel</button><button type="submit" className="px-5 py-2.5 bg-purple-600 text-white font-bold rounded-xl shadow-md hover:bg-purple-700 transition">Save & Mark Ready</button></div>
                     </form>
                 </div>
             )}
@@ -508,14 +547,16 @@ const AttenderDashboard = ({ db, appId, userId }) => {
     );
 };
 
-// --- DOCTOR DASHBOARD ---
+// --- DOCTOR PAGES ---
 const DoctorDashboard = ({ db, appId, userId }) => {
     const [appointments, setAppointments] = useState([]);
     const [consultModal, setConsultModal] = useState(null);
 
     useEffect(() => {
-        const q = query(collection(db, `artifacts/${appId}/appointments`), orderBy('timestamp', 'desc'));
-        return onSnapshot(q, (snap) => setAppointments(snap.docs.map(d => ({id: d.id, ...d.data()})).filter(a => a.doctorId === userId)));
+        return onSnapshot(collection(db, `artifacts/${appId}/appointments`), (snap) => {
+            const apts = snap.docs.map(d => ({id: d.id, ...d.data()}));
+            setAppointments(apts.filter(a => a.doctorId === userId).sort((a,b) => (b.timestamp?.seconds||0) - (a.timestamp?.seconds||0)));
+        });
     }, [db, appId, userId]);
 
     const handleComplete = async (e) => {
@@ -527,29 +568,90 @@ const DoctorDashboard = ({ db, appId, userId }) => {
     return (
         <div className="p-4 sm:p-8 max-w-7xl mx-auto h-full animate-fadeInUp">
             <h1 className="text-3xl font-extrabold text-gray-900 mb-6">Doctor Workspace</h1>
-            <h3 className="font-bold text-lg mb-4 text-green-800">Patients Ready</h3>
-            <div className="grid gap-4">
-                {appointments.filter(a => a.status === 'ready').map(a => (
-                    <div key={a.id} className="bg-white p-5 rounded-2xl border border-gray-200 shadow-sm flex justify-between items-center">
+            
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+              <StatCard title="Patients Ready" value={appointments.filter(a=>a.status==='ready').length} icon="user" colorClass="bg-green-100 text-green-600" />
+              <StatCard title="Scheduled Today" value={appointments.filter(a=>a.status==='scheduled').length} icon="clock" colorClass="bg-blue-100 text-blue-600" />
+              <StatCard title="Completed" value={appointments.filter(a=>a.status==='completed').length} icon="checkCircle" colorClass="bg-gray-100 text-gray-600" />
+            </div>
+
+            <h3 className="font-bold text-lg mb-4 text-green-800 border-b pb-2">Patients Ready for Consultation</h3>
+            <div className="grid gap-4 mb-8">
+                {appointments.filter(a => a.status === 'ready').length === 0 ? <p className="text-gray-500">No patients are currently waiting.</p> : appointments.filter(a => a.status === 'ready').map(a => (
+                    <div key={a.id} className="bg-white p-6 rounded-2xl border border-gray-200 shadow-sm flex flex-col md:flex-row justify-between md:items-center gap-4">
                         <div>
-                            <p className="font-bold text-lg">{a.patientName}</p>
-                            <p className="text-sm text-gray-600">BP: {a.vitals?.bp} | HR: {a.vitals?.hr}</p>
+                            <p className="font-bold text-xl text-gray-900">{a.patientName}</p>
+                            <p className="text-sm text-gray-600 mt-1"><strong>Reason:</strong> {a.reason}</p>
+                            <div className="flex space-x-3 mt-3">
+                                <span className="px-3 py-1 bg-gray-100 rounded-lg text-xs font-semibold">BP: {a.vitals?.bp}</span>
+                                <span className="px-3 py-1 bg-gray-100 rounded-lg text-xs font-semibold">HR: {a.vitals?.hr}</span>
+                                {a.vitals?.glucose && <span className="px-3 py-1 bg-gray-100 rounded-lg text-xs font-semibold">Glu: {a.vitals?.glucose}</span>}
+                            </div>
                         </div>
-                        <button onClick={() => setConsultModal(a)} className="px-6 py-2 bg-green-600 text-white font-bold rounded-xl hover:bg-green-700">Start</button>
+                        <button onClick={() => setConsultModal(a)} className="px-8 py-3 bg-green-600 text-white font-bold rounded-xl shadow-md hover:bg-green-700 transition">Start Consultation</button>
                     </div>
                 ))}
             </div>
 
             {consultModal && (
-                <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
-                    <form onSubmit={handleComplete} className="bg-white p-6 rounded-3xl w-full max-w-lg">
-                        <h3 className="font-bold text-xl mb-4">Consultation: {consultModal.patientName}</h3>
-                        <p className="text-sm bg-gray-50 p-3 rounded-xl mb-4"><strong>Reason:</strong> {consultModal.reason}</p>
-                        <textarea name="notes" required rows="4" placeholder="Prescription & Notes..." className="w-full p-4 border rounded-xl outline-none"></textarea>
-                        <div className="mt-6 flex justify-end space-x-3"><button type="button" onClick={()=>setConsultModal(null)} className="px-4 py-2">Cancel</button><button type="submit" className="px-4 py-2 bg-green-600 text-white rounded-xl">Complete Consultation</button></div>
+                <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+                    <form onSubmit={handleComplete} className="bg-white p-8 rounded-3xl w-full max-w-2xl shadow-2xl animate-fadeInUp">
+                        <div className="flex justify-between items-center mb-6">
+                            <h3 className="font-bold text-2xl text-gray-900">Consultation</h3>
+                            <button type="button" onClick={()=>setConsultModal(null)} className="text-gray-400 hover:text-gray-700"><Icon name="x" size={24}/></button>
+                        </div>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
+                            <div className="bg-gray-50 p-4 rounded-xl border border-gray-100">
+                                <p className="text-xs text-gray-500 uppercase font-bold mb-1">Patient Details</p>
+                                <p className="font-semibold text-lg">{consultModal.patientName}</p>
+                                <p className="text-sm text-gray-700 mt-2"><strong>Complaint:</strong> {consultModal.reason}</p>
+                            </div>
+                            <div className="bg-purple-50 p-4 rounded-xl border border-purple-100">
+                                <p className="text-xs text-purple-600 uppercase font-bold mb-1">Recorded Vitals</p>
+                                <div className="space-y-1 mt-2 text-sm">
+                                    <p><strong>Blood Pressure:</strong> {consultModal.vitals?.bp}</p>
+                                    <p><strong>Heart Rate:</strong> {consultModal.vitals?.hr} bpm</p>
+                                    {consultModal.vitals?.glucose && <p><strong>Glucose:</strong> {consultModal.vitals?.glucose} mg/dL</p>}
+                                </div>
+                            </div>
+                        </div>
+                        <label className="block font-bold text-gray-700 mb-2">Clinical Notes & Prescription</label>
+                        <textarea name="notes" required rows="5" placeholder="Enter diagnosis, treatment plan, and prescribed medications..." className="w-full p-4 border border-gray-300 rounded-xl outline-none focus:ring-2 focus:ring-green-500 resize-none"></textarea>
+                        <div className="mt-8 flex justify-end space-x-3"><button type="submit" className="px-6 py-3 bg-green-600 text-white font-bold rounded-xl shadow-md hover:bg-green-700 transition">Complete & Save to Record</button></div>
                     </form>
                 </div>
             )}
+        </div>
+    );
+};
+
+const DoctorHistory = ({ db, appId, userId }) => {
+    const [appointments, setAppointments] = useState([]);
+    useEffect(() => {
+        return onSnapshot(collection(db, `artifacts/${appId}/appointments`), (snap) => {
+            const apts = snap.docs.map(d => ({id: d.id, ...d.data()}));
+            setAppointments(apts.filter(a => a.doctorId === userId && a.status === 'completed').sort((a,b) => (b.timestamp?.seconds||0) - (a.timestamp?.seconds||0)));
+        });
+    }, [db, appId, userId]);
+
+    return (
+        <div className="p-4 sm:p-8 max-w-7xl mx-auto h-full animate-fadeInUp">
+            <h1 className="text-3xl font-extrabold text-gray-900 mb-8">My Patient History</h1>
+            <div className="space-y-4">
+                {appointments.length === 0 ? <p className="text-gray-500">No completed consultations found.</p> : appointments.map(a => (
+                    <div key={a.id} className="bg-white p-6 rounded-2xl shadow-sm border border-gray-200">
+                        <div className="flex justify-between items-center mb-3">
+                            <h3 className="font-bold text-xl">{a.patientName}</h3>
+                            <span className="text-sm text-gray-500">{new Date(a.completedAt?.seconds * 1000).toLocaleString()}</span>
+                        </div>
+                        <p className="text-sm text-gray-600 mb-4"><strong>Presented With:</strong> {a.reason}</p>
+                        <div className="bg-green-50 p-4 rounded-xl border border-green-100">
+                            <p className="text-xs text-green-800 uppercase font-bold mb-2">Doctor's Notes & Prescription</p>
+                            <p className="text-sm text-gray-800 whitespace-pre-wrap">{a.doctorNotes}</p>
+                        </div>
+                    </div>
+                ))}
+            </div>
         </div>
     );
 };
@@ -561,8 +663,10 @@ const PatientAppointments = ({ db, userId, appId, userName }) => {
     const [reason, setReason] = useState('');
 
     useEffect(() => {
-        const q = query(collection(db, `artifacts/${appId}/appointments`), orderBy('timestamp', 'desc'));
-        return onSnapshot(q, (snap) => setAppointments(snap.docs.map(d => ({id: d.id, ...d.data()})).filter(a => a.patientId === userId)));
+        return onSnapshot(collection(db, `artifacts/${appId}/appointments`), (snap) => {
+            const apts = snap.docs.map(d => ({id: d.id, ...d.data()}));
+            setAppointments(apts.filter(a => a.patientId === userId).sort((a,b) => (b.timestamp?.seconds||0) - (a.timestamp?.seconds||0)));
+        });
     }, [db, userId, appId]);
 
     const handleBook = async (e) => {
@@ -575,24 +679,28 @@ const PatientAppointments = ({ db, userId, appId, userName }) => {
         <div className="p-4 sm:p-8 max-w-4xl mx-auto animate-fadeInUp">
             <div className="flex justify-between items-center mb-8">
                 <h1 className="text-3xl font-extrabold text-gray-900">My Appointments</h1>
-                <button onClick={() => setIsBooking(true)} className="px-5 py-2.5 bg-blue-600 text-white font-bold rounded-xl shadow-md">Book New</button>
+                <button onClick={() => setIsBooking(true)} className="px-5 py-2.5 bg-blue-600 text-white font-bold rounded-xl shadow-md hover:bg-blue-700 transition">Book New</button>
             </div>
             {isBooking && (
-                <form onSubmit={handleBook} className="bg-white p-6 rounded-2xl shadow-lg mb-8">
-                    <label className="block font-bold mb-2">Reason for Visit</label>
-                    <textarea value={reason} onChange={e=>setReason(e.target.value)} required rows="3" className="w-full p-3 border rounded-xl mb-4"></textarea>
-                    <div className="flex justify-end"><button type="button" onClick={()=>setIsBooking(false)} className="px-4 py-2 mr-2">Cancel</button><button type="submit" className="px-6 py-2 bg-blue-600 text-white rounded-xl">Submit Request</button></div>
+                <form onSubmit={handleBook} className="bg-white p-6 rounded-3xl shadow-xl border border-gray-100 mb-8 animate-fadeIn">
+                    <h3 className="font-bold text-xl mb-4">Request Consultation</h3>
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">Reason for Visit / Symptoms</label>
+                    <textarea value={reason} onChange={e=>setReason(e.target.value)} required rows="3" placeholder="Briefly describe what you are experiencing..." className="w-full p-4 border border-gray-300 rounded-xl outline-none focus:ring-2 focus:ring-blue-500 mb-4 resize-none"></textarea>
+                    <div className="flex justify-end space-x-3"><button type="button" onClick={()=>setIsBooking(false)} className="px-5 py-2.5 text-gray-600 font-semibold hover:bg-gray-100 rounded-xl transition">Cancel</button><button type="submit" className="px-5 py-2.5 bg-blue-600 text-white font-bold rounded-xl shadow-md hover:bg-blue-700 transition">Submit Request</button></div>
                 </form>
             )}
             <div className="space-y-4">
-                {appointments.map(a => (
-                    <div key={a.id} className="bg-white p-5 rounded-2xl shadow-sm border">
-                        <div className="flex justify-between mb-2">
-                            <AppointmentBadge status={a.status} />
-                            {(a.status==='scheduled'||a.status==='ready') && <span className="font-bold text-blue-600">{a.date} @ {a.time} with {a.doctorName}</span>}
+                {appointments.length === 0 ? <p className="text-center text-gray-500 p-8 bg-white rounded-2xl border border-gray-100">You have no appointment history.</p> : appointments.map(a => (
+                    <div key={a.id} className="bg-white p-6 rounded-2xl shadow-sm border border-gray-200 hover:shadow-md transition">
+                        <div className="flex justify-between items-start mb-4">
+                            <div>
+                                <AppointmentBadge status={a.status} />
+                                <p className="text-sm text-gray-500 mt-2">{new Date(a.timestamp?.seconds * 1000).toLocaleString()}</p>
+                            </div>
+                            {(a.status==='scheduled'||a.status==='ready') && <div className="text-right"><span className="block font-bold text-blue-600 text-lg">{a.date} at {a.time}</span><span className="text-sm text-gray-600">with {a.doctorName}</span></div>}
                         </div>
-                        <p className="text-sm"><strong>Reason:</strong> {a.reason}</p>
-                        {a.status === 'completed' && <div className="mt-4 pt-4 border-t"><p className="text-sm font-bold text-green-700">Doctor's Notes:</p><p className="text-sm">{a.doctorNotes}</p></div>}
+                        <p className="text-sm text-gray-800"><strong>Reason:</strong> {a.reason}</p>
+                        {a.status === 'completed' && <div className="mt-4 pt-4 border-t border-gray-100 bg-gray-50 -mx-6 -mb-6 p-6 rounded-b-2xl"><p className="text-sm font-bold text-green-700 mb-1">Doctor's Notes & Prescription:</p><p className="text-sm text-gray-700 whitespace-pre-wrap">{a.doctorNotes}</p></div>}
                     </div>
                 ))}
             </div>
@@ -600,17 +708,21 @@ const PatientAppointments = ({ db, userId, appId, userName }) => {
     );
 };
 
-// =================================================================================
-// --- PATIENT COMPONENTS (ORIGINAL AI FEATURES) ---
-// =================================================================================
-
 const HomePage = ({ onNavigate }) => (
   <div className="h-full flex flex-col items-center justify-center bg-gradient-to-r from-blue-500 to-cyan-500 overflow-hidden p-4 sm:p-8">
     <div className="absolute inset-0 opacity-10 bg-cover bg-center" style={{backgroundImage: "url('https://placehold.co/1920x800/ffffff/000000?text=Health+Data+Analysis')"}}></div>
+    
     <div className="z-10 text-center text-white p-4 max-w-4xl">
-      <h1 className="text-4xl md:text-6xl font-extrabold mb-4 drop-shadow-lg tracking-tight animate-fadeInUp">Welcome to Vaidya Mithra</h1>
-      <p className="text-lg md:text-xl mb-8 font-light drop-shadow-md animate-fadeInUp" style={{animationDelay: '0.1s'}}>Get non-diagnostic insights and next steps in seconds. Powered by Gemini AI for responsible health guidance.</p>
-      <button onClick={() => onNavigate('prediction')} className="inline-flex items-center px-8 py-3 bg-white text-blue-700 text-lg font-bold rounded-xl shadow-xl hover:scale-105 transition-all animate-fadeInUp" style={{animationDelay: '0.2s'}}>Start AI Triage <Icon name="chevronRight" size={24} className="ml-2" /></button>
+      <h1 className="text-4xl md:text-6xl font-extrabold mb-4 drop-shadow-lg tracking-tight animate-fadeInUp">
+        Welcome to Vaidya Mithra
+      </h1>
+      <p className="text-lg md:text-xl mb-8 font-light drop-shadow-md animate-fadeInUp" style={{animationDelay: '0.1s'}}>
+        Get non-diagnostic insights and next steps in seconds. Powered by Gemini AI for responsible health guidance.
+      </p>
+      <a href="#prediction" onClick={(e) => { e.preventDefault(); onNavigate('prediction'); }} className="inline-flex items-center px-8 py-3 bg-white text-blue-700 text-lg font-bold rounded-xl shadow-xl hover:bg-gray-50 transition-all duration-300 transform hover:scale-105 animate-fadeInUp" style={{animationDelay: '0.2s'}}>
+        Start AI Triage
+        <Icon name="chevronRight" size={24} className="ml-2" />
+      </a>
     </div>
   </div>
 );
@@ -633,6 +745,20 @@ const PredictionPage = ({ db, userId, authReady, appId }) => {
     } catch (e) { console.error(e); }
   }, [db, userId, authReady, appId]);
 
+  const fetchWithBackoff = useCallback(async (url, options, retries = 3, delay = 1000) => {
+    for (let i = 0; i < retries; i++) {
+      try {
+        const response = await fetch(url, options);
+        if (response.ok) return response;
+        if (response.status === 429 && i < retries - 1) { await new Promise(res => setTimeout(res, delay)); delay *= 2; continue; }
+        throw new Error(`API status ${response.status}`);
+      } catch (error) {
+        if (i === retries - 1) throw error;
+        await new Promise(res => setTimeout(res, delay)); delay *= 2;
+      }
+    }
+  }, []);
+
   const handlePrediction = useCallback(async () => {
     if (selectedSymptoms.length === 0) return;
     setIsLoading(true); setPredictionResult(null);
@@ -642,17 +768,25 @@ const PredictionPage = ({ db, userId, authReady, appId }) => {
 
     try {
       const payload = { contents: [{ parts: [{ text: userQuery }] }], generationConfig: { responseMimeType: "application/json", responseSchema: JSON_SCHEMA } };
-      const response = await fetch(GEMINI_API_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+      const response = await fetchWithBackoff(GEMINI_API_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
       const result = await response.json();
-      const parsedResult = JSON.parse(result.candidates?.[0]?.content?.parts?.[0]?.text);
+      const jsonString = result.candidates?.[0]?.content?.parts?.[0]?.text;
+      if (!jsonString) throw new Error("Invalid response.");
+      const parsedResult = JSON.parse(jsonString);
       setPredictionResult(parsedResult);
+      
       if (db && userId && appId) {
+        // Save to user's history
         await setDoc(doc(collection(db, `artifacts/${appId}/users/${userId}/symptom_history`)), { symptoms: selectedSymptoms, age, gender, result: parsedResult, timestamp: serverTimestamp() });
+        // Save to Global Log for Admin
+        await setDoc(doc(collection(db, `artifacts/${appId}/global_ai_logs`)), { userId, age, gender, symptoms: selectedSymptoms, topPrediction: parsedResult.predictions[0]?.disease || 'N/A', emergency: parsedResult.emergency_flag, timestamp: serverTimestamp() });
       }
     } catch (error) {
-      setPredictionResult({ error: `Prediction failed. Please check API Key.` });
-    } finally { setIsLoading(false); }
-  }, [selectedSymptoms, age, gender, db, userId, appId]);
+      setPredictionResult({ error: `Analysis failed. Check API configuration.` });
+    } finally {
+      setIsLoading(false);
+    }
+  }, [selectedSymptoms, age, gender, db, userId, appId, fetchWithBackoff]);
 
   const toggleSymptom = (s) => setSelectedSymptoms(p => p.includes(s) ? p.filter(x => x !== s) : [...p, s]);
   const isEmergency = predictionResult?.emergency_flag || selectedSymptoms.some(s => s.toLowerCase().includes('chest pain') || s.toLowerCase().includes('difficulty breathing'));
@@ -663,42 +797,44 @@ const PredictionPage = ({ db, userId, authReady, appId }) => {
 
   return (
     <div className="p-4 sm:p-8 max-w-7xl mx-auto w-full animate-fadeInUp">
-      <div className="mb-6"><h2 className="text-3xl font-extrabold text-gray-900">Symptom Assessment</h2></div>
-      
-      <div className="bg-white/80 backdrop-blur-lg shadow-sm rounded-2xl border border-gray-200/50 p-6 mb-6 grid grid-cols-1 sm:grid-cols-3 gap-4">
-          <label className="block"><span className="text-sm font-bold text-gray-700">Age:</span><input type="number" value={age} onChange={e => setAge(Math.max(1, parseInt(e.target.value) || 1))} className="mt-1 w-full p-3 bg-gray-50 border rounded-xl" /></label>
-          <label className="block"><span className="text-sm font-bold text-gray-700">Gender:</span><select value={gender} onChange={e => setGender(e.target.value)} className="mt-1 w-full p-3 bg-gray-50 border rounded-xl"><option>Male</option><option>Female</option></select></label>
-          <label className="block"><span className="text-sm font-bold text-gray-700">Search:</span><input type="text" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} placeholder="Search..." className="mt-1 w-full p-3 bg-gray-50 border rounded-xl" /></label>
+      <div className="mb-6"><h2 className="text-3xl font-extrabold text-gray-900">Symptom Assessment</h2><p className="text-gray-500">Select symptoms to get an initial, non-diagnostic AI triage.</p></div>
+
+      <div className="bg-white/80 backdrop-blur-lg shadow-sm rounded-2xl border border-gray-200/50 p-6 mb-6">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+          <label className="block"><span className="text-sm font-bold text-gray-700">Age:</span><input type="number" value={age} onChange={e => setAge(Math.max(1, parseInt(e.target.value) || 1))} className="mt-1 w-full p-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none" /></label>
+          <label className="block"><span className="text-sm font-bold text-gray-700">Gender:</span><select value={gender} onChange={e => setGender(e.target.value)} className="mt-1 w-full p-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none"><option>Male</option><option>Female</option><option>Other</option></select></label>
+          <label className="block"><span className="text-sm font-bold text-gray-700">Search:</span><input type="text" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} placeholder="e.g., pain, fever..." className="mt-1 w-full p-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none" /></label>
+        </div>
       </div>
 
       <div className="flex flex-col lg:flex-row gap-6">
-        <div className="lg:w-1/2 bg-white/80 shadow-sm rounded-2xl border border-gray-200/50 p-5">
-          <div className="flex space-x-2 overflow-x-auto pb-3 mb-2 border-b border-gray-100 hide-scrollbar">
+        <div className="lg:w-1/2 flex flex-col bg-white/80 backdrop-blur-lg shadow-sm rounded-2xl border border-gray-200/50 p-5">
+          <div className="flex space-x-2 overflow-x-auto pb-3 mb-2 border-b border-gray-100 flex-shrink-0 hide-scrollbar">
             {SYMPTOM_CATEGORIES.map(cat => (
-              <button key={cat} onClick={() => { setActiveCategory(cat); setSearchQuery(''); }} className={`px-4 py-2 rounded-full text-sm font-bold whitespace-nowrap ${activeCategory === cat && !searchQuery ? 'bg-gray-900 text-white' : 'bg-gray-100 hover:bg-gray-200'}`}>{cat}</button>
+              <button key={cat} onClick={() => { setActiveCategory(cat); setSearchQuery(''); }} className={`px-4 py-2 rounded-full text-sm font-bold whitespace-nowrap transition-colors ${activeCategory === cat && !searchQuery ? 'bg-gray-900 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>{cat}</button>
             ))}
           </div>
-          <div className="overflow-y-auto pr-2 grid grid-cols-2 gap-3 max-h-[350px]">
+          <div className="flex-grow overflow-y-auto pr-2 grid grid-cols-2 gap-3 max-h-[350px] content-start">
             {filteredSymptoms.map(symptom => (
-              <button key={symptom} onClick={() => toggleSymptom(symptom)} className={`p-3 text-sm rounded-xl text-left ${selectedSymptoms.includes(symptom) ? 'bg-blue-600 text-white font-bold' : 'bg-gray-50 border hover:bg-gray-100'}`}>{symptom}</button>
+              <button key={symptom} onClick={() => toggleSymptom(symptom)} className={`p-3 text-sm h-fit rounded-xl text-left transition-all ${selectedSymptoms.includes(symptom) ? 'bg-blue-600 text-white font-bold shadow-md' : 'bg-gray-50 text-gray-700 font-medium hover:bg-gray-100 border border-gray-200/50'}`}>{symptom}</button>
             ))}
           </div>
         </div>
 
-        <div className="lg:w-1/2 flex flex-col bg-white/80 shadow-sm rounded-2xl border border-gray-200/50 p-5">
+        <div className="lg:w-1/2 flex flex-col bg-white/80 backdrop-blur-lg shadow-sm rounded-2xl border border-gray-200/50 p-5">
           <h3 className="text-lg font-bold text-gray-900 mb-3">Selected ({selectedSymptoms.length})</h3>
-          <div className="flex-grow flex flex-wrap content-start gap-2 bg-gray-50 rounded-xl p-4 border border-dashed overflow-y-auto min-h-[150px]">
+          <div className="flex-grow flex flex-wrap content-start gap-2 bg-gray-50 rounded-xl p-4 border border-dashed border-gray-300 overflow-y-auto min-h-[150px] max-h-[250px]">
             {selectedSymptoms.length === 0 ? <p className="text-gray-400 italic m-auto text-sm">Start selecting symptoms...</p> : 
               selectedSymptoms.map(symptom => (
-                <div key={symptom} className="flex h-fit items-center bg-blue-100 text-blue-800 text-xs font-bold px-3 py-1.5 rounded-full">
-                  {symptom} <button onClick={() => toggleSymptom(symptom)} className="ml-2 text-blue-600 hover:text-red-500"><Icon name="x" size={14} /></button>
+                <div key={symptom} className="flex h-fit items-center bg-blue-100 text-blue-800 text-xs font-bold px-3 py-1.5 rounded-full shadow-sm transform transition-all duration-200 hover:scale-105">
+                  {symptom} <button onClick={() => toggleSymptom(symptom)} className="ml-2 text-blue-600 hover:text-red-500 transition"><Icon name="x" size={14} /></button>
                 </div>
               ))
             }
           </div>
           <div className="flex justify-end space-x-3 mt-4">
-            <button onClick={() => setSelectedSymptoms([])} className="px-5 py-2.5 text-sm font-bold text-gray-600 bg-gray-200 rounded-xl">Clear</button>
-            <button onClick={handlePrediction} disabled={selectedSymptoms.length===0 || isLoading} className="px-6 py-2.5 text-white font-bold bg-blue-600 rounded-xl shadow-md disabled:opacity-50">
+            <button onClick={() => setSelectedSymptoms([])} disabled={selectedSymptoms.length===0} className="px-5 py-2.5 text-sm font-bold text-gray-600 bg-gray-200 rounded-xl disabled:opacity-50 transition-all hover:scale-105">Clear</button>
+            <button onClick={handlePrediction} disabled={selectedSymptoms.length===0 || isLoading || !authReady} className="px-6 py-2.5 text-white font-bold bg-blue-600 hover:bg-blue-700 rounded-xl shadow-md disabled:opacity-50 transition-all hover:scale-105">
               {isLoading ? "Analyzing..." : "Get AI Triage"}
             </button>
           </div>
@@ -706,157 +842,325 @@ const PredictionPage = ({ db, userId, authReady, appId }) => {
       </div>
 
       <div id="prediction-results" className="mt-8">
-        {isLoading && <div className="space-y-4"><SkeletonCard /></div>}
+        {isLoading && <div className="space-y-4 w-full"><SkeletonCard /><SkeletonCard /></div>}
         {isEmergency && !isLoading && (
-          <div className="bg-red-50 border border-red-200 p-5 rounded-2xl mb-6 flex items-start text-red-800"><Icon name="alertTriangle" size={28} className="mt-0.5 mr-3" color="#ef4444" /><div><h4 className="font-extrabold text-lg">EMERGENCY WARNING</h4><p className="text-sm">Seek professional medical help immediately.</p></div></div>
-        )}
-        {predictionResult && !isLoading && !predictionResult.error && (
-          <div className="space-y-4">
-             <h3 className="text-2xl font-extrabold text-gray-900 mb-2 border-b pb-3">AI Diagnostic Report</h3>
-             <p className="text-xs text-amber-600 font-bold mb-4 bg-amber-50 p-2 rounded-lg border border-amber-200 inline-block">Educational information only. Consult qualified healthcare professionals.</p>
-            {predictionResult.predictions.map((p, index) => (
-                <div key={index} className="p-6 rounded-2xl border border-gray-100 bg-white shadow-sm">
-                  <div className="flex justify-between items-center mb-3"><h4 className="font-extrabold text-xl text-gray-900">{p.disease}</h4><span className="font-extrabold">{Math.round(p.confidence * 100)}%</span></div>
-                  <div className="w-full bg-gray-100 rounded-full h-2 mb-4"><div className="bg-blue-500 h-2 rounded-full" style={{ width: `${Math.round(p.confidence * 100)}%` }}></div></div>
-                  <p className="text-sm text-gray-600">{p.description}</p>
-                </div>
-            ))}
+          <div className="bg-red-50 border border-red-200 p-5 rounded-2xl mb-6 flex items-start text-red-800 animate-fadeIn w-full">
+            <Icon name="alertTriangle" size={28} className="mt-0.5 flex-shrink-0" color="#ef4444" />
+            <div className="ml-4">
+              <h4 className="font-extrabold text-lg">EMERGENCY WARNING</h4>
+              <p className="text-sm mt-1">Based on symptoms, <strong>seek professional medical help immediately.</strong></p>
+            </div>
           </div>
         )}
+        {predictionResult && !isLoading && !predictionResult.error && (
+          <div className="space-y-4 animate-fadeInUp w-full">
+             <h3 className="text-2xl font-extrabold text-gray-900 mb-2 border-b border-gray-200 pb-3">AI Diagnostic Report</h3>
+             <p className="text-xs text-amber-600 font-bold mb-4 bg-amber-50 p-2 rounded-lg border border-amber-200 inline-block">
+               <Icon name="alertTriangle" size={12} className="inline mr-1" /> Educational information only. Consult qualified healthcare professionals for medical advice.
+             </p>
+            {predictionResult.predictions.map((p, index) => {
+              const confidencePercent = Math.round(p.confidence * 100);
+              const barColor = confidencePercent > 70 ? 'bg-emerald-500' : confidencePercent > 40 ? 'bg-amber-500' : 'bg-rose-500';
+              return (
+                <div key={index} className="p-6 rounded-2xl border border-gray-100 bg-white shadow-sm">
+                  <div className="flex justify-between items-center mb-3">
+                    <h4 className="font-extrabold text-xl text-gray-900">{p.disease}</h4>
+                    <span className={`text-sm font-extrabold px-3 py-1 rounded-lg ${confidencePercent > 70 ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>{confidencePercent}%</span>
+                  </div>
+                  <div className="w-full bg-gray-100 rounded-full h-2 mb-4 overflow-hidden"><div className={`h-2 rounded-full ${barColor} transition-all duration-1000`} style={{ width: `${confidencePercent}%` }}></div></div>
+                  <p className="text-sm text-gray-600 leading-relaxed">{p.description}</p>
+                </div>
+              );
+            })}
+          </div>
+        )}
+        {predictionResult?.error && !isLoading && (
+          <div className="p-5 bg-rose-50 border border-rose-200 rounded-2xl text-rose-800 font-mono text-sm w-full">{predictionResult.error}</div>
+        )}
+      </div>
+      
+      <div className="flex-shrink-0 p-4 bg-white/80 backdrop-blur-lg shadow-lg rounded-2xl border border-gray-200/50 mt-6 w-full animate-fadeInUp" style={{animationDelay: '0.2s'}}>
+        <h3 className="text-xl font-semibold text-blue-800 mb-4 flex items-center"><Icon name="history" size={20} className="mr-2 text-blue-500" />Recent History</h3>
+        {authReady ? (
+          <><p className="text-gray-500 text-xs mb-3">Last 5 checks:</p>
+            <div className="space-y-3 max-h-[200px] overflow-y-auto pr-2">
+              {history.length === 0 ? <p className="text-gray-400 italic text-sm">No recent checks found.</p> : history.map(item => (
+                  <div key={item.id} className="p-3 bg-gray-50/80 rounded-lg border border-gray-200 shadow-sm hover:shadow-md transition duration-200">
+                    <p className="text-xs font-semibold text-gray-800">{new Date(item.timestamp?.seconds * 1000).toLocaleString()}</p>
+                    <p className="text-sm text-gray-600 mt-1 truncate">Symptoms: {item.symptoms.join(', ')}</p>
+                    <p className="text-xs font-medium text-green-600 mt-1">Top Prediction: {item.result.predictions[0]?.disease || 'N/A'}</p>
+                  </div>
+                ))}
+            </div>
+          </>
+        ) : (<div className="text-center p-4 text-gray-500"><p>Authenticating Firebase...</p></div>)}
       </div>
     </div>
   );
 };
 
 const DocBotPage = ({ db, userId, authReady, appId }) => {
+  const CHAT_BOT_SYSTEM_INSTRUCTION = "You are DocBot, an AI health assistant. Answer health questions concisely. Do not diagnose. Include this exact text at the end of every medical response: 'Educational information only. Consult qualified healthcare professionals for medical advice.' Use search grounding.";
   const [chatHistory, setChatHistory] = useState([]);
   const [currentMessage, setCurrentMessage] = useState('');
   const [isTyping, setIsTyping] = useState(false);
   const messagesEndRef = useRef(null);
 
   useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [chatHistory]);
+
   useEffect(() => {
     if (!authReady || !userId || !db || !appId) return;
-    const q = query(collection(db, `artifacts/${appId}/users/${userId}/docbot_chat`), orderBy('timestamp', 'asc'), limit(50));
-    return onSnapshot(q, (snapshot) => setChatHistory(snapshot.docs.map(doc => ({...doc.data(), id: doc.id }))));
+    try {
+      const q = query(collection(db, `artifacts/${appId}/users/${userId}/docbot_chat`), orderBy('timestamp', 'asc'), limit(50));
+      return onSnapshot(q, (snapshot) => setChatHistory(snapshot.docs.map(doc => ({...doc.data(), id: doc.id }))));
+    } catch (e) { console.error(e); }
   }, [db, userId, authReady, appId]);
+
+  const fetchWithBackoff = useCallback(async (url, options, retries = 3, delay = 1000) => {
+    for (let i = 0; i < retries; i++) {
+      try {
+        const response = await fetch(url, options);
+        if (response.ok) return response;
+        if (response.status === 429 && i < retries - 1) { await new Promise(res => setTimeout(res, delay)); delay *= 2; continue; }
+        throw new Error(`API status ${response.status}`);
+      } catch (error) {
+        if (i === retries - 1) throw error;
+        await new Promise(res => setTimeout(res, delay)); delay *= 2;
+      }
+    }
+  }, []);
 
   const handleSend = async (messageText) => {
     const message = (typeof messageText === 'string') ? messageText : currentMessage;
-    if (!message.trim() || isTyping || !db) return;
+    if (!message.trim() || isTyping || !db || !userId || !appId) return;
     const userMessage = message.trim(); setCurrentMessage('');
     const colRef = collection(db, `artifacts/${appId}/users/${userId}/docbot_chat`);
+    
     await setDoc(doc(colRef), { text: userMessage, role: 'user', timestamp: serverTimestamp() });
     setIsTyping(true);
 
     try {
       const apiHistory = chatHistory.map(msg => ({ role: msg.role === 'ai' ? 'model' : 'user', parts: [{ text: msg.text }] }));
       apiHistory.push({ role: 'user', parts: [{ text: userMessage }] });
-      const payload = { contents: apiHistory, tools: [{ "google_search": {} }], systemInstruction: { parts: [{ text: "You are DocBot. Answer health questions safely. Add: Educational info only." }] } };
-      const res = await fetch(GEMINI_API_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+      const payload = { contents: apiHistory, tools: [{ "google_search": {} }], systemInstruction: { parts: [{ text: CHAT_BOT_SYSTEM_INSTRUCTION }] } };
+      
+      const res = await fetchWithBackoff(GEMINI_API_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
       const result = await res.json();
-      await setDoc(doc(colRef), { text: result.candidates[0].content.parts[0].text, role: 'ai', timestamp: serverTimestamp() });
-    } catch (e) {
-      await setDoc(doc(colRef), { text: "Error connecting to AI.", role: 'ai_error', timestamp: serverTimestamp() });
+      const aiText = result.candidates?.[0]?.content?.parts?.[0]?.text || "Sorry, error processing.";
+      await setDoc(doc(colRef), { text: aiText, role: 'ai', timestamp: serverTimestamp() });
+    } catch (error) {
+      await setDoc(doc(colRef), { text: "Network Error. Check API key.", role: 'ai_error', timestamp: serverTimestamp() });
     } finally { setIsTyping(false); }
   };
 
   return (
-    <div className="h-full p-4 md:p-8 max-w-4xl mx-auto w-full flex flex-col">
+    <div className="h-full p-4 md:p-8 max-w-4xl mx-auto w-full flex flex-col animate-fadeInUp">
       <div className="bg-white/90 backdrop-blur-xl shadow-sm rounded-3xl border border-gray-200/50 flex flex-col flex-grow overflow-hidden">
+        <div className="px-6 py-4 border-b border-gray-100 bg-gray-50 flex items-center">
+          <Icon name="messageSquare" className="text-blue-600 mr-3" size={24} />
+          <div>
+            <h2 className="text-lg font-bold text-gray-900">DocBot Assistant</h2>
+            <p className="text-xs font-semibold text-emerald-500">Online</p>
+          </div>
+        </div>
         <div className="flex-grow overflow-y-auto p-4 md:p-6 bg-gray-50/30 flex flex-col space-y-4">
-          {chatHistory.length === 0 ? <p className="m-auto text-gray-500">Ask DocBot a question.</p> : chatHistory.map((msg, idx) => (
-              <div key={idx} className={`max-w-[85%] sm:max-w-md p-4 rounded-2xl shadow-sm ${msg.role === 'user' ? 'bg-blue-600 text-white self-end rounded-br-sm' : 'bg-white text-gray-800 self-start rounded-tl-sm'}`}><p className="whitespace-pre-wrap text-sm">{msg.text}</p></div>
-          ))}
-          {isTyping && <div className="self-start bg-white p-4 rounded-2xl"><span className="dot-flashing"></span></div>}
+          {chatHistory.length === 0 && !isTyping ? (
+            <div className="m-auto text-center max-w-sm">
+              <Icon name="stethoscope" size={40} className="text-blue-400 mx-auto mb-4" />
+              <p className="text-gray-500 mb-6">Ask me any general health questions.</p>
+              <div className="space-y-2">
+                {["What are flu symptoms?", "How to reduce stress?"].map(q => (
+                  <button key={q} onClick={() => handleSend(q)} className="block w-full p-3 bg-white border border-gray-200 rounded-xl text-sm font-semibold text-gray-700 hover:text-blue-600 shadow-sm text-left">"{q}"</button>
+                ))}
+              </div>
+            </div>
+          ) : (
+            chatHistory.map((msg, idx) => (
+              <div key={idx} className={`max-w-[85%] sm:max-w-md p-4 rounded-2xl shadow-sm ${msg.role === 'user' ? 'bg-blue-600 text-white self-end rounded-br-sm' : 'bg-white border border-gray-100 text-gray-800 self-start rounded-tl-sm'}`}>
+                <p className="whitespace-pre-wrap text-sm leading-relaxed">{msg.text}</p>
+              </div>
+            ))
+          )}
+          {isTyping && <div className="self-start bg-white border border-gray-100 p-4 rounded-2xl rounded-tl-sm shadow-sm"><span className="dot-flashing"></span></div>}
           <div ref={messagesEndRef} />
         </div>
-        <div className="p-4 bg-white border-t flex items-center">
-          <input type="text" value={currentMessage} onChange={e => setCurrentMessage(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleSend()} className="flex-grow p-3 bg-gray-50 border rounded-2xl mr-2" placeholder="Ask a health question..." />
-          <button onClick={handleSend} className="p-3 bg-blue-600 text-white rounded-xl"><Icon name="send" size={18} /></button>
+        <div className="p-4 bg-white border-t border-gray-100 flex-shrink-0">
+          <div className="relative flex items-center">
+            <input type="text" value={currentMessage} onChange={e => setCurrentMessage(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleSend()} disabled={isTyping || !authReady} placeholder="Type a health question..." className="w-full pl-5 pr-14 py-4 bg-gray-50 border border-gray-200 rounded-2xl focus:ring-2 focus:ring-blue-500 outline-none text-sm" />
+            <button onClick={() => handleSend()} disabled={isTyping || !currentMessage.trim() || !authReady} className="absolute right-2 p-2.5 bg-blue-600 text-white rounded-xl hover:bg-blue-700 disabled:opacity-50 shadow-sm transition"><Icon name="send" size={18} /></button>
+          </div>
         </div>
       </div>
     </div>
   );
 };
 
-// =================================================================================
-// --- MAIN APP COMPONENT ---
-// =================================================================================
+const HospitalPage = () => {
+  return (
+    <div className="p-6 max-w-3xl mx-auto w-full animate-fadeInUp flex items-center justify-center h-full">
+      <div className="bg-white/90 backdrop-blur-xl shadow-sm rounded-3xl p-8 border border-gray-200/50 text-center w-full">
+        <Icon name="hospital" size={48} className="text-blue-500 mx-auto mb-4" />
+        <h2 className="text-2xl font-extrabold text-gray-900 mb-2">Find Medical Care</h2>
+        <p className="text-gray-500 mb-8 max-w-sm mx-auto">Locate the nearest hospitals using your device's location.</p>
+        <button
+          onClick={() => {
+            if(navigator.geolocation) {
+              navigator.geolocation.getCurrentPosition(pos => {
+                window.open(`https://www.google.com/maps/search/Hospitals/@${pos.coords.latitude},${pos.coords.longitude},14z`, '_blank');
+              });
+            } else { alert("Location not supported"); }
+          }}
+          className="px-8 py-3.5 bg-gray-900 hover:bg-black text-white font-bold rounded-xl shadow-md transition-colors"
+        >
+          Open Google Maps
+        </button>
+      </div>
+    </div>
+  );
+};
+
+const ContactPage = () => {
+  return (
+    <div className="p-6 max-w-3xl mx-auto w-full animate-fadeInUp flex items-center justify-center h-full">
+      <div className="bg-white/90 backdrop-blur-xl shadow-sm rounded-3xl p-8 border border-gray-200/50 text-center w-full">
+        <Icon name="mail" size={48} className="text-blue-500 mx-auto mb-4" />
+        <h2 className="text-2xl font-extrabold text-gray-900 mb-2">Contact Support</h2>
+        <p className="text-gray-500 mb-8">Need technical help or have a question about the platform?</p>
+        <div className="space-y-4 max-w-xs mx-auto text-left">
+          <div className="p-4 bg-gray-50 rounded-xl border border-gray-100">
+            <p className="font-bold text-gray-900">Dilip Kumar A N</p>
+            <p className="text-sm text-gray-600">dilipkumaran.ec23@rvce.edu.in</p>
+          </div>
+          <div className="p-4 bg-gray-50 rounded-xl border border-gray-100">
+            <p className="font-bold text-gray-900">Arya B V</p>
+            <p className="text-sm text-gray-600">aryabv.ec23@rvce.edu.in</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 const App = () => {
-  const [db, setDb] = useState(null);
-  const [auth, setAuth] = useState(null);
   const [userId, setUserId] = useState(null);
-  const [userName, setUserName] = useState('');
   const [userRole, setUserRole] = useState(null); 
   const [authReady, setAuthReady] = useState(false);
-  const [appId, setAppId] = useState(null);
-  const [currentPage, setCurrentPage] = useState('');
+  const [currentPage, setCurrentPage] = useState('home');
   const [initError, setInitError] = useState(null);
 
+  // Use the global objects securely initialized at the top of the file
   useEffect(() => {
     let isMounted = true;
-    try {
-      const firebaseConfigStr = getEnvVar('VITE_FIREBASE_CONFIG') || '{}';
-      if (firebaseConfigStr === '{}') { setInitError("Missing VITE_FIREBASE_CONFIG"); setAuthReady(true); return; }
-      
-      const config = JSON.parse(firebaseConfigStr);
-      const newAppId = config.appId;
-      
-      const appInstance = initializeApp(config);
-      const firestoreInstance = getFirestore(appInstance);
-      const authInstance = getAuth(appInstance);
-      
+    
+    if (!auth || !db) {
       if (isMounted) {
-        setDb(firestoreInstance);
-        setAuth(authInstance);
-        setAppId(newAppId);
-      }
-
-      const unsubscribe = onAuthStateChanged(authInstance, async (user) => {
-        if (!isMounted) return;
-        if (user) {
-          setUserId(user.uid);
-          setUserName(user.displayName);
-          try {
-            const profileSnap = await getDoc(doc(firestoreInstance, 'artifacts', newAppId, 'users', user.uid, 'profile', 'data'));
-            if (profileSnap.exists()) {
-              const data = profileSnap.data();
-              setUserRole(data.role);
-              if (data.status === 'pending') setCurrentPage('pending');
-              else if(data.role === 'doctor') setCurrentPage('doctor-home');
-              else if(data.role === 'attender') setCurrentPage('attender-home');
-              else if(data.role === 'admin') setCurrentPage('admin-home');
-              else setCurrentPage('home');
-            } else { setUserRole('patient'); setCurrentPage('home'); }
-          } catch (err) { setUserRole('patient'); setCurrentPage('home'); }
-        } else {
-          setUserId(null); setUserRole(null); setCurrentPage('');
-        }
+        setInitError("Firebase configuration is missing or invalid. Check your environment variables.");
         setAuthReady(true);
-      });
-      return () => unsubscribe();
-    } catch (e) {
-      if (isMounted) setAuthReady(true);
+      }
+      return;
     }
-    return () => { isMounted = false; };
+
+    // Listener for Auth and Role changes
+    const unsubscribe = onAuthStateChanged(auth, async (user) => {
+      if (!isMounted) return;
+      
+      if (user) {
+        setUserId(user.uid);
+        
+        // Setting up a real-time listener on the user's profile to catch immediate Admin approvals
+        const profileRef = doc(db, 'artifacts', globalAppId, 'users', user.uid, 'profile', 'data');
+        const unsubProfile = onSnapshot(profileRef, (profileSnap) => {
+            if (profileSnap.exists()) {
+                const data = profileSnap.data();
+                setUserRole(data.role || 'patient');
+
+                if (data.status === 'pending') {
+                    setCurrentPage('pending');
+                } else {
+                    // Safe routing once approved
+                    if(data.role === 'doctor') setCurrentPage('doctor-home');
+                    else if(data.role === 'attender') setCurrentPage('attender-home');
+                    else if(data.role === 'admin') setCurrentPage('admin-home');
+                    else setCurrentPage('home');
+                }
+            } else {
+                setUserRole('patient');
+                setCurrentPage('home');
+            }
+            setAuthReady(true);
+        }, (error) => {
+            console.error("Profile Listener Error:", error);
+            setUserRole('patient');
+            setCurrentPage('home');
+            setAuthReady(true);
+        });
+        
+        // We do not cleanup unsubProfile here as it needs to stay active for the session. 
+        // A full production app would manage this cleanup on unmount.
+      } else {
+        setUserId(null);
+        setUserRole(null);
+        setCurrentPage('');
+        setAuthReady(true);
+      }
+    });
+    
+    return () => { isMounted = false; unsubscribe(); };
   }, []);
 
   const renderContent = () => {
-    if (initError) return <div className="h-full flex items-center justify-center p-8 text-red-500">{initError}</div>;
-    if (!authReady) return <div className="h-full flex items-center justify-center"><span className="dot-flashing"></span></div>;
-    if (!userId) return <AuthScreen auth={auth} db={db} appId={appId} />;
-    if (currentPage === 'pending') return <PendingApprovalScreen auth={auth} />;
+    if (initError) {
+      return (
+        <div className="h-full flex items-center justify-center p-8">
+          <div className="bg-red-50 border border-red-200 p-6 rounded-2xl max-w-lg w-full text-center">
+             <Icon name="alertTriangle" size={48} className="text-red-500 mx-auto mb-4" />
+             <h3 className="text-lg font-bold text-red-900 mb-2">Initialization Error</h3>
+             <p className="text-sm text-red-700">{initError}</p>
+          </div>
+        </div>
+      );
+    }
 
-    const pageContainerClasses = "h-full w-full pt-16 overflow-y-auto";
+    if (!authReady) {
+      return (
+        <div className="h-full flex flex-col items-center justify-center">
+          <span className="dot-flashing mb-4"></span>
+          <p className="text-gray-500 text-sm font-medium">Initializing Platform...</p>
+        </div>
+      );
+    }
+
+    if (!userId) {
+      return <AuthScreen auth={auth} db={db} appId={globalAppId} />;
+    }
+
+    if (currentPage === 'pending') {
+        return <PendingApprovalScreen auth={auth} />;
+    }
+
+    const pageContainerClasses = "flex-grow w-full overflow-y-auto pt-16 relative z-10";
+
     switch (currentPage) {
+      // Patient Pages
       case 'home': return <div className={pageContainerClasses}><HomePage onNavigate={setCurrentPage} /></div>;
-      case 'prediction': return <div className={pageContainerClasses}><PredictionPage db={db} userId={userId} authReady={authReady} appId={appId} /></div>;
-      case 'docbot': return <div className={pageContainerClasses}><DocBotPage db={db} userId={userId} authReady={authReady} appId={appId} /></div>;
-      case 'appointments': return <div className={pageContainerClasses}><PatientAppointments db={db} userId={userId} appId={appId} userName={userName} /></div>;
-      case 'doctor-home': return <div className={pageContainerClasses}><DoctorDashboard db={db} appId={appId} userId={userId} /></div>;
-      case 'attender-home': return <div className={pageContainerClasses}><AttenderDashboard db={db} appId={appId} userId={userId} /></div>;
-      case 'admin-home': return <div className={pageContainerClasses}><AdminDashboard db={db} appId={appId} /></div>;
+      case 'prediction': return <div className={pageContainerClasses}><PredictionPage db={db} userId={userId} authReady={authReady} appId={globalAppId} /></div>;
+      case 'docbot': return <div className={pageContainerClasses}><DocBotPage db={db} userId={userId} authReady={authReady} appId={globalAppId} /></div>;
+      case 'appointments': return <div className={pageContainerClasses}><PatientAppointments db={db} userId={userId} appId={globalAppId} userName={auth?.currentUser?.displayName} /></div>;
+      case 'hospitals': return <div className={pageContainerClasses}><HospitalPage /></div>;
+      case 'contact': return <div className={pageContainerClasses}><ContactPage /></div>;
+      
+      // Doctor Page
+      case 'doctor-home': return <div className={pageContainerClasses}><DoctorDashboard db={db} appId={globalAppId} userId={userId} /></div>;
+      case 'doctor-history': return <div className={pageContainerClasses}><DoctorHistory db={db} appId={globalAppId} userId={userId} /></div>;
+      
+      // Attender Page
+      case 'attender-home': return <div className={pageContainerClasses}><AttenderDashboard db={db} appId={globalAppId} userId={userId} /></div>;
+      case 'attender-history': return <div className={pageContainerClasses}><div className="p-8 text-center text-gray-500">Feature in development.</div></div>;
+      
+      // Admin Page
+      case 'admin-home': return <div className={pageContainerClasses}><AdminDashboard db={db} appId={globalAppId} /></div>;
+      case 'admin-history': return <div className={pageContainerClasses}><AdminHistory db={db} appId={globalAppId} /></div>;
+      
       default: return <div className={pageContainerClasses}><HomePage onNavigate={setCurrentPage} /></div>;
     }
   };
@@ -871,15 +1175,27 @@ const App = () => {
         @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
         .animate-fadeInUp { animation: fadeInUp 0.5s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
         .animate-fadeIn { animation: fadeIn 0.4s ease-out forwards; }
-        .dot-flashing { position: relative; width: 5px; height: 5px; border-radius: 5px; background-color: #3b82f6; animation: dotFlashing 1s infinite linear alternate; display: inline-block; }
-        .dot-flashing::before, .dot-flashing::after { content: ""; display: inline-block; position: absolute; top: 0; width: 5px; height: 5px; border-radius: 5px; background-color: #3b82f6; animation: dotFlashing 1s infinite alternate; }
-        .dot-flashing::before { left: -8px; animation-delay: 0.4s; }
-        .dot-flashing::after { left: 8px; animation-delay: 0.8s; }
+        .dot-flashing { position: relative; width: 5px; height: 5px; border-radius: 5px; background-color: #3b82f6; color: #3b82f6; animation: dotFlashing 1s infinite linear alternate; animation-delay: 0s; display: inline-block; }
+        .dot-flashing::before, .dot-flashing::after { content: ""; display: inline-block; position: absolute; top: 0; }
+        .dot-flashing::before { left: -8px; width: 5px; height: 5px; border-radius: 5px; background-color: #3b82f6; color: #3b82f6; animation: dotFlashing 1s infinite alternate; animation-delay: 0.4s; }
+        .dot-flashing::after { left: 8px; width: 5px; height: 5px; border-radius: 5px; background-color: #3b82f6; color: #3b82f6; animation: dotFlashing 1s infinite alternate; animation-delay: 0.8s; }
         @keyframes dotFlashing { 0% { opacity: 0.2; } 50% { opacity: 1; } 100% { opacity: 0.2; } }
       `}</style>
       
-      {userId && currentPage !== 'pending' && <NavBar currentPage={currentPage} onNavigate={setCurrentPage} userRole={userRole} auth={auth} db={db} userId={userId} appId={appId} />}
-      <main className="flex-grow overflow-hidden relative z-10">{renderContent()}</main>
+      {userId && currentPage !== 'pending' && (
+        <NavBar 
+          currentPage={currentPage} 
+          onNavigate={setCurrentPage} 
+          userRole={userRole}
+          auth={auth} 
+          db={db}
+          userId={userId}
+          appId={globalAppId}
+        />
+      )}
+      
+      {renderContent()}
+      
       <Footer className="flex-shrink-0 z-20 bg-white" />
     </div>
   );
