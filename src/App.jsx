@@ -2,9 +2,10 @@ import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 // --- Firebase SDK Imports ---
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInAnonymously, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut, onAuthStateChanged, updateProfile } from 'firebase/auth'; 
-import { getFirestore, collection, doc, setDoc, getDoc, updateDoc, query, orderBy, limit, onSnapshot, serverTimestamp } from 'firebase/firestore';
+import { getFirestore, collection, doc, setDoc, getDoc, updateDoc, deleteDoc, query, orderBy, limit, onSnapshot, serverTimestamp } from 'firebase/firestore';
 
-// --- API Configuration ---
+// --- API & Env Configuration ---
+// FIXED: Strictly static access for Vite/Vercel compilation
 const env = (typeof import.meta !== 'undefined' && import.meta.env) ? import.meta.env : {};
 const apiKey = env.VITE_VAIDYA_MITHRA_GEMINI_KEY || "";
 const GEMINI_API_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
@@ -38,9 +39,6 @@ const ALL_SYMPTOMS_CATEGORIZED = {
 };
 const SYMPTOM_CATEGORIES = Object.keys(ALL_SYMPTOMS_CATEGORIZED);
 
-// =================================================================================
-// --- ICONS & BRANDING ---
-// =================================================================================
 const Icon = ({ name, size = 20, color = 'currentColor', className = '' }) => {
   const icons = {
     home: <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>,
@@ -132,6 +130,7 @@ const AuthScreen = ({ auth, db, appId }) => {
         try {
             await signInWithEmailAndPassword(auth, email, password);
         } catch (err) {
+            // First time setup for admin
             if (err.code === 'auth/user-not-found' || err.code === 'auth/invalid-credential') {
                 const userCred = await createUserWithEmailAndPassword(auth, email, password);
                 await updateProfile(userCred.user, { displayName: 'Super Admin' });
@@ -157,10 +156,18 @@ const AuthScreen = ({ auth, db, appId }) => {
         // Patients are auto-approved. Doctors/Attenders are pending.
         const userStatus = role === 'patient' ? 'approved' : 'pending';
         
+        // Save Profile
         const profileRef = doc(db, 'artifacts', appId, 'users', user.uid, 'profile', 'data');
         await setDoc(profileRef, {
           uid: user.uid, email: user.email, name, role, status: userStatus, createdAt: serverTimestamp()
         });
+
+        // If pending, add to a central pool for the Admin to see
+        if (userStatus === 'pending') {
+            await setDoc(doc(db, 'artifacts', appId, 'pending_users', user.uid), {
+                uid: user.uid, email: user.email, name, role, status: 'pending', createdAt: serverTimestamp()
+            });
+        }
       }
     } catch (err) {
       console.error("Auth Error:", err);
@@ -273,6 +280,7 @@ const NavBar = ({ currentPage, onNavigate, userRole, auth, db, userId, appId }) 
     const [notifications, setNotifications] = useState([]);
     const [showNotifMenu, setShowNotifMenu] = useState(false);
     
+    // Listen for Patient Notifications
     useEffect(() => {
         if (!userId || !db || !appId || userRole !== 'patient') return;
         const q = query(collection(db, `artifacts/${appId}/users/${userId}/notifications`), orderBy('timestamp', 'desc'), limit(10));
@@ -321,6 +329,7 @@ const NavBar = ({ currentPage, onNavigate, userRole, auth, db, userId, appId }) 
                             );
                         })}
                         
+                        {/* Patient Notification Bell */}
                         {userRole === 'patient' && (
                             <div className="relative ml-2">
                                 <button onClick={() => setShowNotifMenu(!showNotifMenu)} className="p-2 text-gray-600 hover:bg-gray-100 rounded-full relative">
@@ -405,9 +414,20 @@ const AdminDashboard = ({ db, appId }) => {
     const [pendingUsers, setPendingUsers] = useState([]);
     
     useEffect(() => {
-        // Mock query for single-file demo since collectionGroup needs index
-        // In real app, query all profiles where status == 'pending'
+        const q = query(collection(db, `artifacts/${appId}/pending_users`), orderBy('createdAt', 'desc'));
+        return onSnapshot(q, (snap) => setPendingUsers(snap.docs.map(d => ({id: d.id, ...d.data()}))));
     }, [db, appId]);
+
+    const handleApprove = async (user) => {
+        // 1. Update user profile to approved
+        await updateDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'profile', 'data'), { status: 'approved' });
+        // 2. If Doctor, add to approved doctors list for Attenders to see
+        if (user.role === 'doctor') {
+            await setDoc(doc(db, 'artifacts', appId, 'approved_doctors', user.uid), { uid: user.uid, name: user.name });
+        }
+        // 3. Remove from pending queue
+        await deleteDoc(doc(db, 'artifacts', appId, 'pending_users', user.uid));
+    };
 
     return (
         <div className="p-4 sm:p-8 max-w-7xl mx-auto h-full animate-fadeInUp">
@@ -416,11 +436,26 @@ const AdminDashboard = ({ db, appId }) => {
                 <p className="text-gray-500">Manage platform users and approve healthcare staff.</p>
             </div>
             
-            <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6 text-center">
-                <Icon name="shield" size={48} className="mx-auto text-blue-500 mb-4" />
-                <h3 className="text-xl font-bold mb-2">Admin Active</h3>
-                <p className="text-gray-600">You have full system access. In a production environment, this dashboard displays all pending doctor and attender registrations for manual verification.</p>
-            </div>
+            <h3 className="font-bold text-lg mb-4 text-blue-800">Pending Approvals</h3>
+            {pendingUsers.length === 0 ? (
+                <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6 text-center">
+                    <Icon name="checkCircle" size={48} className="mx-auto text-green-500 mb-4" />
+                    <h3 className="text-xl font-bold mb-2">All Clear</h3>
+                    <p className="text-gray-600">No pending staff registrations to review.</p>
+                </div>
+            ) : (
+                <div className="grid gap-4">
+                    {pendingUsers.map(user => (
+                        <div key={user.id} className="bg-white p-5 rounded-2xl border border-gray-200 shadow-sm flex flex-col sm:flex-row justify-between items-start sm:items-center">
+                            <div>
+                                <p className="font-bold text-lg">{user.name} <span className="text-sm font-normal text-gray-500">({user.email})</span></p>
+                                <p className="text-sm font-bold uppercase text-amber-600 mt-1">Role: {user.role}</p>
+                            </div>
+                            <button onClick={() => handleApprove(user)} className="mt-4 sm:mt-0 px-6 py-2 bg-green-600 text-white font-bold rounded-xl hover:bg-green-700 transition">Approve Access</button>
+                        </div>
+                    ))}
+                </div>
+            )}
         </div>
     );
 };
@@ -430,15 +465,19 @@ const AdminDashboard = ({ db, appId }) => {
 // =================================================================================
 const AttenderDashboard = ({ db, appId, userId }) => {
     const [appointments, setAppointments] = useState([]);
-    const [doctors] = useState([{id: 'doc1', name: 'Dr. Smith'}, {id: 'doc2', name: 'Dr. Ali'}]); // Mocked doctors list
-    
+    const [doctors, setDoctors] = useState([]);
     const [activeTab, setActiveTab] = useState('requests');
     const [scheduleModal, setScheduleModal] = useState(null); 
     const [vitalsModal, setVitalsModal] = useState(null);
 
     useEffect(() => {
-        const q = query(collection(db, `artifacts/${appId}/appointments`), orderBy('timestamp', 'desc'));
-        return onSnapshot(q, (snap) => setAppointments(snap.docs.map(d => ({id: d.id, ...d.data()}))));
+        // Fetch Appointments
+        const qApt = query(collection(db, `artifacts/${appId}/appointments`), orderBy('timestamp', 'desc'));
+        const unsubApt = onSnapshot(qApt, (snap) => setAppointments(snap.docs.map(d => ({id: d.id, ...d.data()}))));
+        // Fetch Doctors for dropdown
+        const qDoc = collection(db, `artifacts/${appId}/approved_doctors`);
+        const unsubDoc = onSnapshot(qDoc, (snap) => setDoctors(snap.docs.map(d => d.data())));
+        return () => { unsubApt(); unsubDoc(); };
     }, [db, appId]);
 
     const handleScheduleSubmit = async (e) => {
@@ -447,12 +486,14 @@ const AttenderDashboard = ({ db, appId, userId }) => {
         const docId = formData.get('doctorId');
         const date = formData.get('date');
         const time = formData.get('time');
-        const doctorName = doctors.find(d => d.id === docId)?.name || 'Doctor';
+        const doctorName = doctors.find(d => d.uid === docId)?.name || 'Doctor';
 
+        // Update Appointment
         await updateDoc(doc(db, `artifacts/${appId}/appointments`, scheduleModal.id), {
             status: 'scheduled', doctorId: docId, doctorName, date, time, attenderId: userId
         });
 
+        // Notify Patient
         await setDoc(doc(collection(db, `artifacts/${appId}/users/${scheduleModal.patientId}/notifications`)), {
             message: `Your appointment has been scheduled with ${doctorName} on ${date} at ${time}.`, timestamp: serverTimestamp(), read: false
         });
@@ -501,19 +542,25 @@ const AttenderDashboard = ({ db, appId, userId }) => {
                 ))}
             </div>
 
+            {/* Modals */}
             {scheduleModal && (
                 <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
                     <form onSubmit={handleScheduleSubmit} className="bg-white p-6 rounded-3xl w-full max-w-md shadow-2xl">
                         <h3 className="font-bold text-xl mb-4">Schedule Appointment</h3>
                         <p className="text-sm text-gray-600 mb-4">Patient: {scheduleModal.patientName}</p>
                         <div className="space-y-4">
-                            <label className="block text-sm font-bold">Assign Doctor<select name="doctorId" required className="mt-1 w-full p-3 border border-gray-200 rounded-xl bg-gray-50">{doctors.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}</select></label>
+                            <label className="block text-sm font-bold">Assign Doctor
+                                <select name="doctorId" required className="mt-1 w-full p-3 border border-gray-200 rounded-xl bg-gray-50">
+                                    {doctors.length === 0 && <option value="">No doctors available (Pending Admin)</option>}
+                                    {doctors.map(d => <option key={d.uid} value={d.uid}>{d.name}</option>)}
+                                </select>
+                            </label>
                             <label className="block text-sm font-bold">Date<input type="date" name="date" required className="mt-1 w-full p-3 border border-gray-200 rounded-xl bg-gray-50"/></label>
                             <label className="block text-sm font-bold">Time<input type="time" name="time" required className="mt-1 w-full p-3 border border-gray-200 rounded-xl bg-gray-50"/></label>
                         </div>
                         <div className="mt-6 flex justify-end space-x-3">
                             <button type="button" onClick={() => setScheduleModal(null)} className="px-4 py-2 font-bold text-gray-600 hover:bg-gray-100 rounded-xl">Cancel</button>
-                            <button type="submit" className="px-4 py-2 font-bold text-white bg-blue-600 hover:bg-blue-700 rounded-xl">Confirm & Notify</button>
+                            <button type="submit" disabled={doctors.length===0} className="px-4 py-2 font-bold text-white bg-blue-600 hover:bg-blue-700 rounded-xl disabled:opacity-50">Confirm & Notify</button>
                         </div>
                     </form>
                 </div>
@@ -548,8 +595,8 @@ const DoctorDashboard = ({ db, appId, userId }) => {
 
     useEffect(() => {
         const q = query(collection(db, `artifacts/${appId}/appointments`), orderBy('timestamp', 'desc'));
-        return onSnapshot(q, (snap) => setAppointments(snap.docs.map(d => ({id: d.id, ...d.data()}))));
-    }, [db, appId]);
+        return onSnapshot(q, (snap) => setAppointments(snap.docs.map(d => ({id: d.id, ...d.data()})).filter(a => a.doctorId === userId)));
+    }, [db, appId, userId]);
 
     const handleConsultSubmit = async (e) => {
         e.preventDefault();
@@ -628,6 +675,7 @@ const DoctorDashboard = ({ db, appId, userId }) => {
 // =================================================================================
 // --- PATIENT COMPONENTS ---
 // =================================================================================
+
 const PatientAppointments = ({ db, userId, appId, userName }) => {
     const [appointments, setAppointments] = useState([]);
     const [isBooking, setIsBooking] = useState(false);
@@ -712,9 +760,11 @@ const PredictionPage = ({ db, userId, authReady, appId }) => {
   useEffect(() => {
     if (!authReady || !userId || !db || !appId) return;
     try {
-      const q = query(collection(db, `artifacts/${appId}/users/${userId}/symptom_history`), orderBy('timestamp', 'desc'), limit(5));
-      return onSnapshot(q, (snapshot) => setHistory(snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id }))));
-    } catch (e) { console.error(e); }
+      const historyCollectionRef = collection(db, `artifacts/${appId}/users/${userId}/symptom_history`);
+      const q = query(historyCollectionRef, orderBy('timestamp', 'desc'), limit(5));
+      const unsubscribe = onSnapshot(q, (snapshot) => setHistory(snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id }))));
+      return () => unsubscribe();
+    } catch (e) { console.error("Firestore History Listener Failed:", e); }
   }, [db, userId, authReady, appId]);
 
   const fetchWithBackoff = useCallback(async (url, options, retries = 3, delay = 1000) => {
@@ -723,7 +773,7 @@ const PredictionPage = ({ db, userId, authReady, appId }) => {
         const response = await fetch(url, options);
         if (response.ok) return response;
         if (response.status === 429 && i < retries - 1) { await new Promise(res => setTimeout(res, delay)); delay *= 2; continue; }
-        throw new Error(`API status ${response.status}`);
+        throw new Error(`API returned status ${response.status}`);
       } catch (error) {
         if (i === retries - 1) throw error;
         await new Promise(res => setTimeout(res, delay)); delay *= 2;
@@ -734,79 +784,87 @@ const PredictionPage = ({ db, userId, authReady, appId }) => {
   const handlePrediction = useCallback(async () => {
     if (selectedSymptoms.length === 0) return;
     setIsLoading(true); setPredictionResult(null);
-    setTimeout(() => document.getElementById('prediction-results')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 100);
+    setTimeout(() => { document.getElementById('prediction-results')?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }, 100);
 
-    const userQuery = `The patient is a ${age} year old ${gender}. Symptoms: ${selectedSymptoms.join(', ')}. Act as a professional medical analyst. Provide top 3 differential diagnoses, confidence score (0.0 to 1.0), and concise next steps. Focus strictly on JSON output.`;
+    const userQuery = `The patient is a ${age} year old ${gender}. They are currently experiencing the following symptoms: ${selectedSymptoms.join(', ')}. Please act as a professional medical analyst and provide the top 3 most likely differential diagnoses, a confidence score (0.0 to 1.0) for each, and non-alarming, concise next steps/advice. Focus strictly on the JSON output format.`;
 
     try {
       const payload = { contents: [{ parts: [{ text: userQuery }] }], generationConfig: { responseMimeType: "application/json", responseSchema: JSON_SCHEMA } };
       const response = await fetchWithBackoff(GEMINI_API_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
       const result = await response.json();
-      const parsedResult = JSON.parse(result.candidates?.[0]?.content?.parts?.[0]?.text);
+      const jsonString = result.candidates?.[0]?.content?.parts?.[0]?.text;
+      if (!jsonString) throw new Error("Invalid response format from AI.");
+
+      const parsedResult = JSON.parse(jsonString);
       setPredictionResult(parsedResult);
+      
       if (db && userId && appId) {
-        await setDoc(doc(collection(db, `artifacts/${appId}/users/${userId}/symptom_history`)), { symptoms: selectedSymptoms, age, gender, result: parsedResult, timestamp: serverTimestamp() });
+        const historyCollectionRef = collection(db, `artifacts/${appId}/users/${userId}/symptom_history`);
+        await setDoc(doc(historyCollectionRef), { symptoms: selectedSymptoms, age, gender, result: parsedResult, timestamp: serverTimestamp() });
       }
-    } catch (error) { setPredictionResult({ error: `Could not retrieve prediction. Error: ${error.message}` }); } finally { setIsLoading(false); }
+    } catch (error) {
+      console.error("Prediction failed:", error);
+      setPredictionResult({ error: `Could not retrieve AI prediction. ${error.message}` });
+    } finally { setIsLoading(false); }
   }, [selectedSymptoms, age, gender, db, userId, appId, fetchWithBackoff]);
 
-  const toggleSymptom = (s) => setSelectedSymptoms(p => p.includes(s) ? p.filter(x => x !== s) : [...p, s]);
-  const isEmergency = predictionResult?.emergency_flag || selectedSymptoms.some(s => s.toLowerCase().includes('chest pain') || s.toLowerCase().includes('difficulty breathing'));
+  const toggleSymptom = (symptom) => setSelectedSymptoms(prev => prev.includes(symptom) ? prev.filter(s => s !== symptom) : [...prev, symptom]);
+  const clearSymptoms = () => setSelectedSymptoms([]);
+
   const filteredSymptoms = useMemo(() => {
     let symptoms = searchQuery ? SYMPTOM_CATEGORIES.flatMap(cat => ALL_SYMPTOMS_CATEGORIZED[cat]) : ALL_SYMPTOMS_CATEGORIZED[activeCategory] || [];
-    return symptoms.filter(s => s.toLowerCase().includes(searchQuery.toLowerCase())).sort((a, b) => a.localeCompare(b));
+    const lowerCaseQuery = searchQuery.toLowerCase();
+    return symptoms.filter(s => s.toLowerCase().includes(lowerCaseQuery)).sort((a, b) => a.localeCompare(b));
   }, [activeCategory, searchQuery]);
 
+  const isEmergency = predictionResult?.emergency_flag || selectedSymptoms.some(s => s.toLowerCase().includes('chest pain') || s.toLowerCase().includes('difficulty breathing'));
+
   return (
-    <div className="p-4 sm:p-8 max-w-7xl mx-auto w-full animate-fadeInUp">
-      <div className="mb-6"><h2 className="text-3xl font-extrabold text-gray-900">Symptom Assessment</h2><p className="text-gray-500">Select symptoms to get an initial, non-diagnostic AI triage.</p></div>
-      <div className="bg-white/80 backdrop-blur-lg shadow-sm rounded-2xl border border-gray-200/50 p-6 mb-6">
+    <div id="prediction-page" className="h-full flex flex-col p-4 sm:p-8">
+      <div className="flex-shrink-0 animate-fadeInUp"><h2 className="text-4xl font-extrabold text-blue-800 mb-2">Symptom Assessment</h2><p className="text-gray-500 mb-4">Select symptoms to get an initial, non-diagnostic AI assessment.</p></div>
+      <div className="flex-shrink-0 p-4 bg-white/80 backdrop-blur-lg shadow-lg rounded-2xl border border-gray-200/50 mb-4 animate-fadeInUp" style={{ animationDelay: '0.1s' }}>
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-          <label className="block"><span className="text-sm font-bold text-gray-700">Age:</span><input type="number" value={age} onChange={e => setAge(Math.max(1, parseInt(e.target.value) || 1))} className="mt-1 w-full p-3 bg-gray-50 border border-gray-200 rounded-xl outline-none" /></label>
-          <label className="block"><span className="text-sm font-bold text-gray-700">Gender:</span><select value={gender} onChange={e => setGender(e.target.value)} className="mt-1 w-full p-3 bg-gray-50 border border-gray-200 rounded-xl outline-none"><option>Male</option><option>Female</option><option>Other</option></select></label>
-          <label className="block"><span className="text-sm font-bold text-gray-700">Search:</span><input type="text" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} placeholder="e.g., pain, fever..." className="mt-1 w-full p-3 bg-gray-50 border border-gray-200 rounded-xl outline-none" /></label>
+          <label className="block"><span className="text-sm font-medium text-gray-600">Age:</span><input type="number" value={age} onChange={(e) => setAge(Math.max(1, parseInt(e.target.value) || 1))} className="mt-1 w-full p-2 border border-gray-300 rounded-xl focus:ring-blue-500 focus:border-blue-500"/></label>
+          <label className="block"><span className="text-sm font-medium text-gray-600">Gender:</span><select value={gender} onChange={(e) => setGender(e.target.value)} className="mt-1 w-full p-2 border border-gray-300 rounded-xl focus:ring-blue-500 focus:border-blue-500 bg-white"><option>Male</option><option>Female</option><option>Other</option></select></label>
+          <label className="block sm:col-span-1"><span className="text-sm font-medium text-gray-600">Search Symptoms:</span><input type="text" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} placeholder="e.g., pain, fever..." className="mt-1 w-full p-2 border border-gray-300 rounded-xl focus:ring-blue-500 focus:border-blue-500"/></label>
         </div>
       </div>
-      <div className="flex flex-col lg:flex-row gap-6">
-        <div className="lg:w-1/2 flex flex-col bg-white/80 backdrop-blur-lg shadow-sm rounded-2xl border border-gray-200/50 p-5">
-          <div className="flex space-x-2 overflow-x-auto pb-3 mb-2 border-b border-gray-100 flex-shrink-0 hide-scrollbar">
-            {SYMPTOM_CATEGORIES.map(cat => ( <button key={cat} onClick={() => { setActiveCategory(cat); setSearchQuery(''); }} className={`px-4 py-2 rounded-full text-sm font-bold whitespace-nowrap transition-colors ${activeCategory === cat && !searchQuery ? 'bg-gray-900 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>{cat}</button> ))}
+      <div className="flex-grow flex flex-col lg:flex-row gap-4 animate-fadeInUp" style={{ animationDelay: '0.2s' }}>
+        <div className="lg:w-1/2 flex flex-col bg-white/80 backdrop-blur-lg shadow-lg rounded-2xl border border-gray-200/50 p-4">
+          <h3 className="text-xl font-semibold text-blue-800 mb-3 flex-shrink-0">Select Symptoms</h3>
+          <div className="flex space-x-2 overflow-x-auto pb-2 border-b border-gray-200 flex-shrink-0">
+            {SYMPTOM_CATEGORIES.map(cat => (<button key={cat} onClick={() => { setActiveCategory(cat); setSearchQuery(''); }} className={`px-4 py-2 rounded-full text-sm font-medium transition duration-150 whitespace-nowrap ${activeCategory === cat && !searchQuery ? 'bg-blue-600 text-white shadow-md' : 'bg-gray-100 text-gray-700 hover:bg-blue-100'}`}>{cat}</button>))}
           </div>
-          <div className="flex-grow overflow-y-auto pr-2 grid grid-cols-2 gap-3 max-h-[350px] content-start">
-            {filteredSymptoms.map(symptom => ( <button key={symptom} onClick={() => toggleSymptom(symptom)} className={`p-3 text-sm h-fit rounded-xl text-left transition-all ${selectedSymptoms.includes(symptom) ? 'bg-blue-600 text-white font-bold shadow-md' : 'bg-gray-50 text-gray-700 font-medium hover:bg-gray-100 border border-gray-200/50'}`}>{symptom}</button> ))}
+          <div className="flex-grow overflow-y-auto pr-2 pt-3 grid grid-cols-2 md:grid-cols-3 gap-3">
+            {filteredSymptoms.length > 0 ? filteredSymptoms.map(symptom => {
+              const isSelected = selectedSymptoms.includes(symptom);
+              return (<button key={symptom} onClick={() => toggleSymptom(symptom)} className={`p-3 text-sm h-fit rounded-xl text-left shadow-sm transform transition-all duration-200 ${isSelected ? 'bg-green-500 text-white font-semibold ring-2 ring-green-400 hover:scale-105' : 'bg-gray-50/80 text-gray-700 hover:bg-blue-50 border border-gray-200/50 hover:scale-105'}`}>{symptom}</button>);
+            }) : (<p className="text-gray-500 italic p-4 col-span-full text-center">No symptoms match your search.</p>)}
           </div>
         </div>
-        <div className="lg:w-1/2 flex flex-col bg-white/80 backdrop-blur-lg shadow-sm rounded-2xl border border-gray-200/50 p-5">
-          <h3 className="text-lg font-bold text-gray-900 mb-3">Selected ({selectedSymptoms.length})</h3>
-          <div className="flex-grow flex flex-wrap content-start gap-2 bg-gray-50 rounded-xl p-4 border border-dashed border-gray-300 overflow-y-auto min-h-[150px] max-h-[250px]">
-            {selectedSymptoms.length === 0 ? <p className="text-gray-400 italic m-auto text-sm">Start selecting symptoms...</p> : selectedSymptoms.map(symptom => ( <div key={symptom} className="flex h-fit items-center bg-blue-100 text-blue-800 text-xs font-bold px-3 py-1.5 rounded-full">{symptom} <button onClick={() => toggleSymptom(symptom)} className="ml-2 text-blue-600 hover:text-red-500"><Icon name="x" size={14} /></button></div> ))}
-          </div>
-          <div className="flex justify-end space-x-3 mt-4">
-            <button onClick={() => setSelectedSymptoms([])} disabled={selectedSymptoms.length===0} className="px-5 py-2.5 text-sm font-bold text-gray-600 bg-gray-200 rounded-xl disabled:opacity-50">Clear</button>
-            <button onClick={handlePrediction} disabled={selectedSymptoms.length===0 || isLoading || !authReady} className="px-6 py-2.5 text-white font-bold bg-blue-600 hover:bg-blue-700 rounded-xl shadow-md disabled:opacity-50 transition-colors">{isLoading ? "Analyzing..." : "Get AI Triage"}</button>
+        <div className="lg:w-1/2 flex flex-col bg-white/80 backdrop-blur-lg shadow-lg rounded-2xl border border-gray-200/50 p-4">
+          <div className="flex-shrink-0"><h3 className="text-xl font-semibold text-blue-800 mb-3">Selected ({selectedSymptoms.length})</h3><div className="flex flex-wrap gap-2 min-h-[6rem] max-h-[150px] overflow-y-auto border border-dashed border-gray-300 rounded-lg p-3">{selectedSymptoms.length === 0 ? (<p className="text-gray-400 italic m-auto">Start selecting symptoms from the left...</p>) : (selectedSymptoms.map(symptom => (<div key={symptom} className="flex h-fit items-center bg-blue-100 text-blue-800 text-xs font-medium px-3 py-1 rounded-full shadow-sm transform transition-all duration-200 hover:scale-105">{symptom}<button onClick={() => toggleSymptom(symptom)} className="ml-2 text-blue-600 hover:text-red-500 transition"><Icon name="x" size={14} /></button></div>))))}</div></div>
+          <div className="flex-shrink-0 flex justify-end space-x-3 mt-4">
+            <button onClick={clearSymptoms} disabled={selectedSymptoms.length === 0 || isLoading} className="px-4 py-2 text-sm text-gray-600 bg-gray-200 hover:bg-gray-300 rounded-xl transition-all duration-150 disabled:opacity-50 transform hover:scale-105">Clear All</button>
+            <button onClick={handlePrediction} disabled={selectedSymptoms.length === 0 || isLoading || !authReady} className="px-6 py-3 text-white font-bold bg-blue-600 hover:bg-blue-700 rounded-xl transition-all duration-150 shadow-md disabled:opacity-50 flex items-center justify-center transform hover:scale-105">{isLoading ? (<><svg className="animate-spin -ml-1 mr-3 h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>Analyzing...</>) : ('Get AI Prediction')}</button>
           </div>
         </div>
       </div>
-      <div id="prediction-results" className="mt-8">
-        {isLoading && <div className="space-y-4"><SkeletonCard /><SkeletonCard /></div>}
-        {isEmergency && !isLoading && ( <div className="bg-red-50 border border-red-200 p-5 rounded-2xl mb-6 flex items-start text-red-800"><Icon name="alertTriangle" size={28} className="mt-0.5 flex-shrink-0" color="#ef4444" /><div className="ml-4"><h4 className="font-extrabold text-lg">EMERGENCY WARNING</h4><p className="text-sm mt-1">Based on symptoms, <strong>seek professional medical help immediately.</strong></p></div></div> )}
+      <div id="prediction-results" className="mt-6">
+        {isLoading && <div className="space-y-4 w-full"><SkeletonCard /><SkeletonCard /><SkeletonCard /></div>}
+        {isEmergency && !isLoading && (<div className="bg-red-50 border border-red-200 p-4 rounded-xl mb-4 flex items-start text-red-800 w-full"><Icon name="alertTriangle" size={24} className="mt-1 flex-shrink-0" color="#ef4444" /><div className="ml-3"><h4 className="font-bold text-lg">EMERGENCY WARNING!</h4><p className="text-sm">Based on symptoms, **seek professional medical help immediately.**</p></div></div>)}
         {predictionResult && !isLoading && !predictionResult.error && (
-          <div className="space-y-4 animate-fadeInUp">
-             <h3 className="text-2xl font-extrabold text-gray-900 mb-2 border-b border-gray-200 pb-3">AI Diagnostic Report</h3>
+          <div className="space-y-4 w-full animate-fadeInUp">
+             <h3 className="text-2xl font-bold text-blue-800 mb-2">AI Assessment</h3>
              <p className="text-xs text-amber-600 font-bold mb-4 bg-amber-50 p-2 rounded-lg border border-amber-200 inline-block"><Icon name="alertTriangle" size={12} className="inline mr-1" /> Educational information only. Consult qualified healthcare professionals for medical advice.</p>
             {predictionResult.predictions.map((p, index) => {
               const confidencePercent = Math.round(p.confidence * 100);
-              const barColor = confidencePercent > 70 ? 'bg-emerald-500' : confidencePercent > 40 ? 'bg-amber-500' : 'bg-rose-500';
-              return (
-                <div key={index} className="p-6 rounded-2xl border border-gray-100 bg-white shadow-sm">
-                  <div className="flex justify-between items-center mb-3"><h4 className="font-extrabold text-xl text-gray-900">{p.disease}</h4><span className={`text-sm font-extrabold px-3 py-1 rounded-lg ${confidencePercent > 70 ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>{confidencePercent}%</span></div>
-                  <div className="w-full bg-gray-100 rounded-full h-2 mb-4 overflow-hidden"><div className={`h-2 rounded-full ${barColor} transition-all duration-1000`} style={{ width: `${confidencePercent}%` }}></div></div>
-                  <p className="text-sm text-gray-600 leading-relaxed">{p.description}</p>
-                </div>
-              );
+              let barColor = 'bg-red-400'; if (confidencePercent > 70) barColor = 'bg-green-500'; else if (confidencePercent > 40) barColor = 'bg-yellow-500';
+              return (<div key={index} className="p-4 rounded-xl border shadow-sm" style={{borderColor: '#bbf7d0', backgroundColor: '#f0fdf4'}}><div className="flex justify-between items-center mb-2"><h4 className="font-bold text-lg text-green-700">{p.disease}</h4><span className="text-sm font-semibold text-gray-700">{confidencePercent}%</span></div><div className="w-full bg-gray-200 rounded-full h-2.5 mb-3"><div className={`h-2.5 rounded-full ${barColor} transition-all duration-500`} style={{ width: `${confidencePercent}%` }}></div></div><p className="text-sm text-gray-700">{p.description}</p></div>);
             })}
           </div>
         )}
+        {predictionResult?.error && !isLoading && (<div className="p-4 bg-red-100 border border-red-400 rounded-xl text-red-800 w-full"><p className="font-semibold">Error:</p><p className="text-sm">{predictionResult.error}</p></div>)}
       </div>
     </div>
   );
@@ -820,12 +878,13 @@ const DocBotPage = ({ db, userId, authReady, appId }) => {
   const messagesEndRef = useRef(null);
 
   useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [chatHistory]);
+
   useEffect(() => {
     if (!authReady || !userId || !db || !appId) return;
     try {
       const q = query(collection(db, `artifacts/${appId}/users/${userId}/docbot_chat`), orderBy('timestamp', 'asc'), limit(50));
       return onSnapshot(q, (snapshot) => setChatHistory(snapshot.docs.map(doc => ({...doc.data(), id: doc.id }))));
-    } catch (e) {}
+    } catch (e) { console.error(e); }
   }, [db, userId, authReady, appId]);
 
   const handleSend = async (messageText) => {
@@ -843,7 +902,9 @@ const DocBotPage = ({ db, userId, authReady, appId }) => {
       const result = await res.json();
       const aiText = result.candidates?.[0]?.content?.parts?.[0]?.text || "Sorry, error processing.";
       await setDoc(doc(colRef), { text: aiText, role: 'ai', timestamp: serverTimestamp() });
-    } catch (error) { await setDoc(doc(colRef), { text: "Network Error. Check API key.", role: 'ai_error', timestamp: serverTimestamp() }); } finally { setIsTyping(false); }
+    } catch (error) {
+      await setDoc(doc(colRef), { text: "Network Error. Check API key.", role: 'ai_error', timestamp: serverTimestamp() });
+    } finally { setIsTyping(false); }
   };
 
   return (
@@ -852,41 +913,23 @@ const DocBotPage = ({ db, userId, authReady, appId }) => {
         <div className="px-6 py-4 border-b border-gray-100 bg-gray-50 flex items-center"><Icon name="messageSquare" className="text-blue-600 mr-3" size={24} /><div><h2 className="text-lg font-bold text-gray-900">DocBot Assistant</h2><p className="text-xs font-semibold text-emerald-500">Online</p></div></div>
         <div className="flex-grow overflow-y-auto p-4 md:p-6 bg-gray-50/30 flex flex-col space-y-4">
           {chatHistory.length === 0 && !isTyping ? (
-            <div className="m-auto text-center max-w-sm"><Icon name="stethoscope" size={40} className="text-blue-400 mx-auto mb-4" /><p className="text-gray-500 mb-6">Ask me any general health questions.</p>
-              <div className="space-y-2">{["What are flu symptoms?", "How to reduce stress?"].map(q => (<button key={q} onClick={() => handleSend(q)} className="block w-full p-3 bg-white border border-gray-200 rounded-xl text-sm font-semibold text-gray-700 hover:text-blue-600 shadow-sm text-left">"{q}"</button>))}</div>
-            </div>
-          ) : ( chatHistory.map((msg, idx) => ( <div key={idx} className={`max-w-[85%] sm:max-w-md p-4 rounded-2xl shadow-sm ${msg.role === 'user' ? 'bg-blue-600 text-white self-end rounded-br-sm' : 'bg-white border border-gray-100 text-gray-800 self-start rounded-tl-sm'}`}><p className="whitespace-pre-wrap text-sm leading-relaxed">{msg.text}</p></div>)) )}
+            <div className="m-auto text-center max-w-sm"><Icon name="stethoscope" size={40} className="text-blue-400 mx-auto mb-4" /><p className="text-gray-500 mb-6">Ask me any general health questions.</p><div className="space-y-2">{["What are flu symptoms?", "How to reduce stress?"].map(q => (<button key={q} onClick={() => handleSend(q)} className="block w-full p-3 bg-white border border-gray-200 rounded-xl text-sm font-semibold text-gray-700 hover:text-blue-600 shadow-sm text-left">"{q}"</button>))}</div></div>
+          ) : (chatHistory.map((msg, idx) => (<div key={idx} className={`max-w-[85%] sm:max-w-md p-4 rounded-2xl shadow-sm ${msg.role === 'user' ? 'bg-blue-600 text-white self-end rounded-br-sm' : 'bg-white border border-gray-100 text-gray-800 self-start rounded-tl-sm'}`}><p className="whitespace-pre-wrap text-sm leading-relaxed">{msg.text}</p></div>)))}
           {isTyping && <div className="self-start bg-white border border-gray-100 p-4 rounded-2xl rounded-tl-sm shadow-sm"><span className="dot-flashing"></span></div>}
           <div ref={messagesEndRef} />
         </div>
-        <div className="p-4 bg-white border-t border-gray-100 flex-shrink-0">
-          <div className="relative flex items-center">
-            <input type="text" value={currentMessage} onChange={e => setCurrentMessage(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleSend()} disabled={isTyping || !authReady} placeholder="Type a health question..." className="w-full pl-5 pr-14 py-4 bg-gray-50 border border-gray-200 rounded-2xl outline-none text-sm" />
-            <button onClick={() => handleSend()} disabled={isTyping || !currentMessage.trim() || !authReady} className="absolute right-2 p-2.5 bg-blue-600 text-white rounded-xl hover:bg-blue-700 disabled:opacity-50 shadow-sm"><Icon name="send" size={18} /></button>
-          </div>
-        </div>
+        <div className="p-4 bg-white border-t border-gray-100 flex-shrink-0"><div className="relative flex items-center"><input type="text" value={currentMessage} onChange={e => setCurrentMessage(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleSend()} disabled={isTyping || !authReady} placeholder="Type a health question..." className="w-full pl-5 pr-14 py-4 bg-gray-50 border border-gray-200 rounded-2xl focus:ring-2 focus:ring-blue-500 outline-none text-sm" /><button onClick={() => handleSend()} disabled={isTyping || !currentMessage.trim() || !authReady} className="absolute right-2 p-2.5 bg-blue-600 text-white rounded-xl hover:bg-blue-700 disabled:opacity-50 shadow-sm"><Icon name="send" size={18} /></button></div></div>
       </div>
     </div>
   );
 };
 
 const HospitalPage = () => (
-  <div className="p-6 max-w-3xl mx-auto w-full animate-fadeInUp flex items-center justify-center h-full">
-    <div className="bg-white/90 backdrop-blur-xl shadow-sm rounded-3xl p-8 border border-gray-200/50 text-center w-full">
-      <Icon name="hospital" size={48} className="text-blue-500 mx-auto mb-4" />
-      <h2 className="text-2xl font-extrabold text-gray-900 mb-2">Find Medical Care</h2>
-      <p className="text-gray-500 mb-8 max-w-sm mx-auto">Locate the nearest emergency rooms and hospitals using your device's location.</p>
-      <button onClick={() => { if(navigator.geolocation) { navigator.geolocation.getCurrentPosition(pos => { window.open(`https://www.google.com/maps/search/Hospitals/@${pos.coords.latitude},${pos.coords.longitude},14z`, '_blank'); }); } else { alert("Location not supported"); } }} className="px-8 py-3.5 bg-gray-900 hover:bg-black text-white font-bold rounded-xl shadow-md transition-colors">Open Google Maps</button>
-    </div>
-  </div>
+  <div className="p-6 max-w-3xl mx-auto w-full animate-fadeInUp flex items-center justify-center h-full"><div className="bg-white/90 backdrop-blur-xl shadow-sm rounded-3xl p-8 border border-gray-200/50 text-center w-full"><Icon name="hospital" size={48} className="text-blue-500 mx-auto mb-4" /><h2 className="text-2xl font-extrabold text-gray-900 mb-2">Find Medical Care</h2><p className="text-gray-500 mb-8 max-w-sm mx-auto">Locate the nearest emergency rooms and hospitals using your device's location.</p><button onClick={() => { if(navigator.geolocation) { navigator.geolocation.getCurrentPosition(pos => { window.open(`https://www.google.com/maps/search/Hospitals/@${pos.coords.latitude},${pos.coords.longitude},14z`, '_blank'); }); } else { alert("Location not supported"); } }} className="px-8 py-3.5 bg-gray-900 hover:bg-black text-white font-bold rounded-xl shadow-md transition-colors">Open Google Maps</button></div></div>
 );
 
 const ContactPage = () => (
-  <div className="p-6 max-w-3xl mx-auto w-full animate-fadeInUp flex items-center justify-center h-full">
-    <div className="bg-white/90 backdrop-blur-xl shadow-sm rounded-3xl p-8 border border-gray-200/50 text-center w-full"><Icon name="mail" size={48} className="text-blue-500 mx-auto mb-4" /><h2 className="text-2xl font-extrabold text-gray-900 mb-2">Contact Support</h2><p className="text-gray-500 mb-8">Need technical help or have a question about the platform?</p>
-      <div className="space-y-4 max-w-xs mx-auto text-left"><div className="p-4 bg-gray-50 rounded-xl border border-gray-100"><p className="font-bold text-gray-900">Dilip Kumar A N</p><p className="text-sm text-gray-600">dilipkumaran.ec23@rvce.edu.in</p></div><div className="p-4 bg-gray-50 rounded-xl border border-gray-100"><p className="font-bold text-gray-900">Arya B V</p><p className="text-sm text-gray-600">aryabv.ec23@rvce.edu.in</p></div></div>
-    </div>
-  </div>
+  <div className="p-6 max-w-3xl mx-auto w-full animate-fadeInUp flex items-center justify-center h-full"><div className="bg-white/90 backdrop-blur-xl shadow-sm rounded-3xl p-8 border border-gray-200/50 text-center w-full"><Icon name="mail" size={48} className="text-blue-500 mx-auto mb-4" /><h2 className="text-2xl font-extrabold text-gray-900 mb-2">Contact Support</h2><p className="text-gray-500 mb-8">Need technical help or have a question about the platform?</p><div className="space-y-4 max-w-xs mx-auto text-left"><div className="p-4 bg-gray-50 rounded-xl border border-gray-100"><p className="font-bold text-gray-900">Dilip Kumar A N</p><p className="text-sm text-gray-600">dilipkumaran.ec23@rvce.edu.in</p></div><div className="p-4 bg-gray-50 rounded-xl border border-gray-100"><p className="font-bold text-gray-900">Arya B V</p><p className="text-sm text-gray-600">aryabv.ec23@rvce.edu.in</p></div></div></div></div>
 );
 
 // =================================================================================
@@ -894,71 +937,73 @@ const ContactPage = () => (
 // =================================================================================
 
 const App = () => {
-  const [db, setDb] = useState(null);
-  const [auth, setAuth] = useState(null);
   const [userId, setUserId] = useState(null);
   const [userName, setUserName] = useState('');
-  const [userRole, setUserRole] = useState(null); 
+  const [userRole, setUserRole] = useState(null);
   const [userStatus, setUserStatus] = useState(null); 
   const [authReady, setAuthReady] = useState(false);
-  const [appId, setAppId] = useState(null);
-  const [currentPage, setCurrentPage] = useState('');
+  const [currentPage, setCurrentPage] = useState('home');
+  const [initError, setInitError] = useState(null);
 
   useEffect(() => {
     let isMounted = true;
-    try {
-      const fbConfigStr = getEnvVar('VITE_FIREBASE_CONFIG');
-      if (!fbConfigStr || fbConfigStr === '{}') { setAuthReady(true); return; }
-      
-      const config = JSON.parse(fbConfigStr);
-      if (!config.apiKey || !config.appId) { setAuthReady(true); return; }
+    if (!auth || !db) {
+      if (isMounted) { setInitError("Firebase configuration is missing or invalid."); setAuthReady(true); }
+      return;
+    }
 
-      const app = initializeApp(config);
-      const firestore = getFirestore(app);
-      const firebaseAuth = getAuth(app);
-      
-      if (isMounted) { setDb(firestore); setAuth(firebaseAuth); setAppId(config.appId); }
-
-      onAuthStateChanged(firebaseAuth, async (user) => {
-        if (!isMounted) return;
-        if (user) {
-          setUserId(user.uid);
-          setUserName(user.displayName || 'User');
-          try {
-            const profileRef = doc(firestore, 'artifacts', config.appId, 'users', user.uid, 'profile', 'data');
-            const profileSnap = await getDoc(profileRef);
-            if (profileSnap.exists()) {
-              const data = profileSnap.data();
-              setUserRole(data.role || 'patient');
-              setUserStatus(data.status || 'approved');
-              if (data.status === 'pending') { setCurrentPage(''); } 
-              else { setCurrentPage(data.role === 'admin' ? 'admin-home' : data.role === 'doctor' ? 'doctor-home' : data.role === 'attender' ? 'attender-home' : 'home'); }
-            } else { setUserRole('patient'); setUserStatus('approved'); setCurrentPage('home'); }
-          } catch (err) { setUserRole('patient'); setUserStatus('approved'); setCurrentPage('home'); }
-        } else { setUserId(null); setUserRole(null); setUserStatus(null); setCurrentPage(''); }
-        setAuthReady(true);
-      });
-    } catch (e) { console.error(e); if (isMounted) setAuthReady(true); }
-    return () => { isMounted = false; };
+    const unsubscribe = onAuthStateChanged(auth, async (user) => {
+      if (!isMounted) return;
+      if (user) {
+        setUserId(user.uid);
+        setUserName(user.displayName || 'User');
+        try {
+          const profileSnap = await getDoc(doc(db, 'artifacts', globalAppId, 'users', user.uid, 'profile', 'data'));
+          if (profileSnap.exists()) {
+            const data = profileSnap.data();
+            setUserRole(data.role || 'patient');
+            setUserStatus(data.status || 'approved');
+            
+            if (data.status === 'pending') {
+               setCurrentPage(''); // Stay on pending screen
+            } else {
+               if(data.role === 'doctor') setCurrentPage('doctor-home');
+               else if(data.role === 'attender') setCurrentPage('attender-home');
+               else if(data.role === 'admin') setCurrentPage('admin-home');
+               else setCurrentPage('home');
+            }
+          } else {
+            setUserRole('patient'); setUserStatus('approved'); setCurrentPage('home');
+          }
+        } catch (err) {
+          setUserRole('patient'); setUserStatus('approved'); setCurrentPage('home');
+        }
+      } else {
+        setUserId(null); setUserRole(null); setUserStatus(null); setCurrentPage('home');
+      }
+      setAuthReady(true);
+    });
+    return () => { isMounted = false; unsubscribe(); };
   }, []);
 
   const renderContent = () => {
-    if (!authReady) return <div className="h-full flex items-center justify-center"><span className="dot-flashing"></span></div>;
-    if (!userId) return <AuthScreen auth={auth} db={db} appId={appId} />;
+    if (initError) return <div className="h-full flex items-center justify-center p-8"><div className="bg-red-50 border border-red-200 p-6 rounded-2xl max-w-lg w-full text-center"><Icon name="alertTriangle" size={48} className="text-red-500 mx-auto mb-4" /><h3 className="text-lg font-bold text-red-900 mb-2">Initialization Error</h3><p className="text-sm text-red-700">{initError}</p></div></div>;
+    if (!authReady) return <div className="h-full flex flex-col items-center justify-center"><span className="dot-flashing mb-4"></span><p className="text-gray-500 text-sm font-medium">Initializing Platform...</p></div>;
+    if (!userId) return <AuthScreen auth={auth} db={db} appId={globalAppId} />;
     if (userStatus === 'pending') return <PendingApprovalScreen auth={auth} />;
 
-    const containerClasses = "h-full w-full pt-16 overflow-y-auto";
+    const pageContainerClasses = "flex-grow w-full overflow-y-auto pt-16 relative z-10";
     switch (currentPage) {
-      case 'home': return <div className={containerClasses}><HomePage onNavigate={setCurrentPage} /></div>;
-      case 'appointments': return <div className={containerClasses}><PatientAppointments db={db} userId={userId} appId={appId} userName={userName} /></div>;
-      case 'prediction': return <div className={containerClasses}><PredictionPage db={db} userId={userId} authReady={authReady} appId={appId} /></div>;
-      case 'docbot': return <div className={containerClasses}><DocBotPage db={db} userId={userId} authReady={authReady} appId={appId} /></div>;
-      case 'hospitals': return <div className={containerClasses}><HospitalPage /></div>;
-      case 'contact': return <div className={containerClasses}><ContactPage /></div>;
-      case 'doctor-home': return <div className={containerClasses}><DoctorDashboard db={db} appId={appId} userId={userId} /></div>;
-      case 'attender-home': return <div className={containerClasses}><AttenderDashboard db={db} appId={appId} userId={userId} /></div>;
-      case 'admin-home': return <div className={containerClasses}><AdminDashboard db={db} appId={appId} /></div>;
-      default: return <div className={containerClasses}><HomePage onNavigate={setCurrentPage} /></div>;
+      case 'home': return <div className={pageContainerClasses}><HomePage onNavigate={setCurrentPage} /></div>;
+      case 'appointments': return <div className={pageContainerClasses}><PatientAppointments db={db} userId={userId} appId={globalAppId} userName={userName} /></div>;
+      case 'prediction': return <div className={pageContainerClasses}><PredictionPage db={db} userId={userId} authReady={authReady} appId={globalAppId} /></div>;
+      case 'docbot': return <div className={pageContainerClasses}><DocBotPage db={db} userId={userId} authReady={authReady} appId={globalAppId} /></div>;
+      case 'hospitals': return <div className={pageContainerClasses}><HospitalPage /></div>;
+      case 'contact': return <div className={pageContainerClasses}><ContactPage /></div>;
+      case 'doctor-home': return <div className={pageContainerClasses}><DoctorDashboard db={db} appId={globalAppId} userId={userId} /></div>;
+      case 'attender-home': return <div className={pageContainerClasses}><AttenderDashboard db={db} appId={globalAppId} userId={userId} /></div>;
+      case 'admin-home': return <div className={pageContainerClasses}><AdminDashboard db={db} appId={globalAppId} /></div>;
+      default: return <div className={pageContainerClasses}><HomePage onNavigate={setCurrentPage} /></div>;
     }
   };
 
@@ -978,7 +1023,8 @@ const App = () => {
         .dot-flashing::after { left: 8px; width: 5px; height: 5px; border-radius: 5px; background-color: #3b82f6; color: #3b82f6; animation: dotFlashing 1s infinite alternate; animation-delay: 0.8s; }
         @keyframes dotFlashing { 0% { opacity: 0.2; } 50% { opacity: 1; } 100% { opacity: 0.2; } }
       `}</style>
-      {userId && userStatus === 'approved' && <NavBar currentPage={currentPage} onNavigate={setCurrentPage} userRole={userRole} auth={auth} db={db} userId={userId} appId={appId} />}
+      
+      {userId && userStatus === 'approved' && <NavBar currentPage={currentPage} onNavigate={setCurrentPage} userRole={userRole} auth={auth} db={db} userId={userId} appId={globalAppId} />}
       <main className="flex-grow overflow-hidden relative z-10">{renderContent()}</main>
       <Footer className="flex-shrink-0 z-20 bg-white" />
     </div>
