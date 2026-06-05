@@ -25,12 +25,15 @@ import {
   setLogLevel 
 } from 'firebase/firestore';
 
+// =================================================================================
+// --- GLOBAL ENVIRONMENT & API CONFIGURATION ---
+// =================================================================================
 let apiKey = "";
 let fbConfigStr = "{}";
 let globalAppId = "default-app-id";
 
 try {
-  // Vite static replacement safe wrapper
+  // Safe wrapper for Vite environment variables
   if (typeof import.meta !== 'undefined' && import.meta.env) {
     apiKey = import.meta.env.VITE_VAIDYA_MITHRA_GEMINI_KEY || "";
     fbConfigStr = import.meta.env.VITE_FIREBASE_CONFIG || "{}";
@@ -41,6 +44,7 @@ try {
 
 const GEMINI_API_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
 
+// --- Structured JSON Schema for Disease Prediction ---
 const JSON_SCHEMA = {
   type: "OBJECT",
   properties: {
@@ -70,6 +74,9 @@ const ALL_SYMPTOMS_CATEGORIZED = {
 };
 const SYMPTOM_CATEGORIES = Object.keys(ALL_SYMPTOMS_CATEGORIZED);
 
+// =================================================================================
+// --- ICONS & BRANDING ---
+// =================================================================================
 const Icon = ({ name, size = 20, color = 'currentColor', className = '' }) => {
   const icons = {
     home: <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>,
@@ -135,6 +142,10 @@ const Footer = ({ className = '' }) => (
   </div>
 );
 
+// =================================================================================
+// --- AUTHENTICATION & ACCESS ---
+// =================================================================================
+
 const AuthScreen = ({ auth, db, appId }) => {
   const [isLogin, setIsLogin] = useState(true);
   const [email, setEmail] = useState('');
@@ -159,7 +170,7 @@ const AuthScreen = ({ auth, db, appId }) => {
             const userCred = await createUserWithEmailAndPassword(auth, email, password);
             await updateProfile(userCred.user, { displayName: 'Super Admin' });
             
-            // Create Admin Profile
+            // Create Admin Profile & write to global users list
             const adminData = { uid: userCred.user.uid, email, name: 'Super Admin', role: 'admin', status: 'approved', createdAt: serverTimestamp() };
             await setDoc(doc(db, 'artifacts', appId, 'users', userCred.user.uid, 'profile', 'data'), adminData);
             await setDoc(doc(db, 'artifacts', appId, 'all_users', userCred.user.uid), adminData);
@@ -295,6 +306,8 @@ const NavBar = ({ currentPage, onNavigate, userRole, auth, db, userId, appId }) 
             <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
                 <div className="flex justify-between items-center h-16">
                     <a href="#" onClick={(e) => { e.preventDefault(); handleNavigation(navItems[0].id); }} className="no-underline"><Logo /></a>
+                    
+                    {/* Desktop Menu */}
                     <div className="hidden lg:flex items-center space-x-1">
                         {navItems.map((item) => (
                             <a key={item.id} href="#" onClick={(e) => { e.preventDefault(); handleNavigation(item.id); }} className={`px-3 py-2 rounded-xl text-sm font-semibold flex items-center transition duration-150 ${currentPage === item.id ? 'bg-blue-50 text-blue-700' : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'}`}>
@@ -310,12 +323,15 @@ const NavBar = ({ currentPage, onNavigate, userRole, auth, db, userId, appId }) 
                         <div className="w-px h-6 bg-gray-200 mx-2"></div>
                         <button onClick={() => signOut(auth)} className="px-3 py-2 rounded-xl text-sm font-semibold flex items-center text-red-600 hover:bg-red-50 transition duration-150"><Icon name="logOut" size={18} className="mr-2" />Logout</button>
                     </div>
+                    
+                    {/* Mobile Menu Button */}
                     <button className="lg:hidden p-2 rounded-lg text-gray-700 hover:bg-gray-100 transition" onClick={() => setIsMenuOpen(!isMenuOpen)}>
                          {isMenuOpen ? <Icon name="x" size={24} /> : <Icon name="menu" size={24} />}
                     </button>
                 </div>
             </div>
 
+            {/* Mobile Menu Overlay */}
             {isMenuOpen && (
                 <div className="lg:hidden absolute top-16 left-0 w-full bg-white/95 backdrop-blur-lg shadow-xl border-t border-gray-200/80 transform origin-top transition-all duration-300 ease-out" style={{ maxHeight: 'calc(100vh - 4rem)', overflowY: 'auto' }}>
                     <div className="flex flex-col p-4 space-y-2">
@@ -332,6 +348,10 @@ const NavBar = ({ currentPage, onNavigate, userRole, auth, db, userId, appId }) 
         </nav>
     );
 };
+
+// =================================================================================
+// --- UNIVERSAL FEATURES (PROFILE & SUPPORT) ---
+// =================================================================================
 
 const ProfilePage = ({ db, auth, userId, appId, userRole }) => {
   const [profile, setProfile] = useState({ name: '', mobile: '', age: '', gender: 'Male' });
@@ -366,6 +386,7 @@ const ProfilePage = ({ db, auth, userId, appId, userRole }) => {
       const allUserRef = doc(db, 'artifacts', appId, 'all_users', userId);
       
       await updateDoc(userRef, { name: profile.name, mobile: profile.mobile, age: profile.age, gender: profile.gender });
+      // Update global directory safely (might not exist if old user)
       try { await updateDoc(allUserRef, { name: profile.name, mobile: profile.mobile, age: profile.age, gender: profile.gender }); } catch(e){}
 
       await updateProfile(auth.currentUser, { displayName: profile.name });
@@ -383,7 +404,10 @@ const ProfilePage = ({ db, auth, userId, appId, userRole }) => {
         <div className="bg-gradient-to-r from-blue-600 to-indigo-600 p-8 text-white">
           <div className="flex items-center space-x-4">
             <div className="w-20 h-20 bg-white/20 rounded-full flex items-center justify-center backdrop-blur-sm"><Icon name="user" size={40} /></div>
-            <div><h1 className="text-3xl font-extrabold">{profile.name || 'User Profile'}</h1><p className="text-blue-100 font-medium uppercase tracking-wide">{userRole}</p></div>
+            <div>
+              <h1 className="text-3xl font-extrabold">{profile.name || 'User Profile'}</h1>
+              <p className="text-blue-100 font-medium uppercase tracking-wide">{userRole}</p>
+            </div>
           </div>
         </div>
         
@@ -418,16 +442,27 @@ const ProfilePage = ({ db, auth, userId, appId, userRole }) => {
   );
 };
 
+// =================================================================================
+// --- DASHBOARDS FOR ENTERPRISE ROLES ---
+// =================================================================================
+
 const StatCard = ({ title, value, icon, colorClass }) => (
   <div className="bg-white rounded-2xl p-6 border border-gray-100 shadow-sm flex justify-between items-center transition-transform hover:-translate-y-1 hover:shadow-md">
-    <div><p className="text-sm font-bold text-gray-500 uppercase tracking-wider mb-1">{title}</p><h3 className="text-4xl font-extrabold text-gray-900">{value}</h3></div>
+    <div>
+      <p className="text-sm font-bold text-gray-500 uppercase tracking-wider mb-1">{title}</p>
+      <h3 className="text-4xl font-extrabold text-gray-900">{value}</h3>
+    </div>
     <div className={`p-4 rounded-2xl ${colorClass}`}><Icon name={icon} size={32} /></div>
   </div>
 );
 
+// --- ADMIN DASHBOARDS ---
+
 const AdminDashboard = ({ db, appId }) => {
   const [stats, setStats] = useState({ patients: 0, doctors: 0, attenders: 0, total: 0 });
+  
   useEffect(() => {
+    // Note: Fetching full collection and sorting client side to prevent missing index errors
     const q = query(collection(db, `artifacts/${appId}/all_users`));
     return onSnapshot(q, (snap) => {
       const users = snap.docs.map(d => d.data());
@@ -460,6 +495,7 @@ const AdminApprovals = ({ db, appId }) => {
     const q = query(collection(db, `artifacts/${appId}/all_users`));
     return onSnapshot(q, (snap) => {
       const users = snap.docs.map(d => d.data());
+      // Filter & sort in memory to avoid index requirement
       setPending(users.filter(u => u.status === 'pending').sort((a,b) => (b.createdAt?.seconds||0) - (a.createdAt?.seconds||0)));
     });
   }, [db, appId]);
@@ -468,6 +504,7 @@ const AdminApprovals = ({ db, appId }) => {
     try {
       await updateDoc(doc(db, 'artifacts', appId, 'all_users', user.uid), { status: 'approved' });
       await updateDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'profile', 'data'), { status: 'approved' });
+      // If doctor, add to quick access list for attenders
       if (user.role === 'doctor') {
         await setDoc(doc(db, 'artifacts', appId, 'approved_doctors', user.uid), { uid: user.uid, name: user.name });
       }
@@ -502,7 +539,9 @@ const AdminUsers = ({ db, appId }) => {
 
   useEffect(() => {
     const q = query(collection(db, `artifacts/${appId}/all_users`));
-    return onSnapshot(q, (snap) => setUsers(snap.docs.map(d => d.data()).sort((a,b) => (b.createdAt?.seconds||0) - (a.createdAt?.seconds||0))));
+    return onSnapshot(q, (snap) => {
+      setUsers(snap.docs.map(d => d.data()).sort((a,b) => (b.createdAt?.seconds||0) - (a.createdAt?.seconds||0)));
+    });
   }, [db, appId]);
 
   const filteredUsers = filter === 'all' ? users : users.filter(u => u.role === filter);
@@ -569,6 +608,8 @@ const AdminHistory = ({ db, appId }) => {
   );
 };
 
+// --- ATTENDER DASHBOARDS ---
+
 const AttenderDashboard = ({ db, appId }) => {
   const [appointments, setAppointments] = useState([]);
   const [doctors, setDoctors] = useState([]);
@@ -578,6 +619,7 @@ const AttenderDashboard = ({ db, appId }) => {
   useEffect(() => {
       const unsubApt = onSnapshot(collection(db, `artifacts/${appId}/appointments`), (snap) => {
           const apts = snap.docs.map(d => ({id: d.id, ...d.data()}));
+          // Sort client side to avoid missing index
           setAppointments(apts.sort((a,b) => (b.timestamp?.seconds||0) - (a.timestamp?.seconds||0)));
       });
       const unsubDoc = onSnapshot(collection(db, `artifacts/${appId}/approved_doctors`), (snap) => setDoctors(snap.docs.map(d => d.data())));
@@ -642,6 +684,8 @@ const AttenderDashboard = ({ db, appId }) => {
                   </div>
               </div>
           </div>
+          
+          {/* Modals */}
           {scheduleModal && (
               <div className="fixed inset-0 bg-gray-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
                   <form onSubmit={handleSchedule} className="bg-white p-8 rounded-3xl w-full max-w-md shadow-2xl animate-fadeInUp">
@@ -668,13 +712,15 @@ const AttenderDashboard = ({ db, appId }) => {
                           <div><label className="block text-xs font-bold text-gray-700 mb-1 uppercase">Heart Rate (BPM)</label><input type="number" name="hr" placeholder="72" required className="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl outline-none focus:ring-2 focus:ring-purple-500"/></div>
                           <div><label className="block text-xs font-bold text-gray-700 mb-1 uppercase">Glucose (mg/dL) - Optional</label><input type="number" name="glucose" placeholder="95" className="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl outline-none focus:ring-2 focus:ring-purple-500"/></div>
                       </div>
-                      <div className="mt-8 flex justify-end space-x-3"><button type="button" onClick={()=>setVitalsModal(null)} className="px-5 py-2.5 text-gray-600 font-bold hover:bg-gray-100 rounded-xl transition">Cancel</button><button type="submit" className="px-5 py-2.5 bg-purple-600 text-white font-bold rounded-xl shadow-md hover:bg-purple-700 transition">Mark Ready for Doctor</button></div>
+                      <div className="mt-8 flex justify-end space-x-3"><button type="button" onClick={()=>setVitalsModal(null)} className="px-5 py-2.5 text-gray-600 font-bold hover:bg-gray-100 rounded-xl transition">Cancel</button><button type="submit" className="px-5 py-2.5 bg-purple-600 text-white font-bold rounded-xl shadow-md hover:bg-purple-700 transition">Mark Ready</button></div>
                   </form>
               </div>
           )}
       </div>
   );
 };
+
+// --- DOCTOR DASHBOARDS ---
 
 const DoctorDashboard = ({ db, appId, userId }) => {
   const [appointments, setAppointments] = useState([]);
@@ -707,6 +753,7 @@ const DoctorDashboard = ({ db, appId, userId }) => {
             <StatCard title="Scheduled Today" value={scheduled.length} icon="clock" colorClass="bg-blue-100 text-blue-600" />
             <StatCard title="Total Completed" value={completed.length} icon="checkCircle" colorClass="bg-gray-100 text-gray-600" />
           </div>
+
           <div className="bg-white rounded-3xl shadow-sm border border-gray-200 p-6 md:p-8">
             <h3 className="font-bold text-xl text-emerald-800 mb-6 flex items-center border-b border-gray-100 pb-4"><Icon name="activity" className="mr-2"/> Consultation Queue (Ready)</h3>
             <div className="grid gap-4">
@@ -726,6 +773,7 @@ const DoctorDashboard = ({ db, appId, userId }) => {
                 ))}
             </div>
           </div>
+
           {consultModal && (
               <div className="fixed inset-0 bg-gray-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
                   <form onSubmit={handleComplete} className="bg-white p-6 sm:p-8 rounded-3xl w-full max-w-3xl shadow-2xl animate-fadeInUp max-h-[90vh] flex flex-col">
@@ -770,6 +818,11 @@ const DoctorHistory = ({ db, appId, userId }) => {
   );
 };
 
+
+// =================================================================================
+// --- PATIENT COMPONENTS (ORIGINAL FEATURES) ---
+// =================================================================================
+
 const PatientAppointments = ({ db, userId, appId, userName }) => {
   const [appointments, setAppointments] = useState([]);
   const [isBooking, setIsBooking] = useState(false);
@@ -799,6 +852,7 @@ const PatientAppointments = ({ db, userId, appId, userName }) => {
               <div><h1 className="text-3xl font-extrabold text-gray-900">My Appointments</h1><p className="text-gray-500 mt-1">Book and track your consultations.</p></div>
               <button onClick={() => setIsBooking(true)} className="px-6 py-3 bg-blue-600 text-white font-bold rounded-xl shadow-lg hover:bg-blue-700 transition flex items-center"><Icon name="calendar" className="mr-2"/> Request Consult</button>
           </div>
+
           {isBooking && (
               <form onSubmit={handleBook} className="bg-white p-6 sm:p-8 rounded-3xl shadow-xl border border-gray-200 mb-8 animate-fadeIn">
                   <h3 className="font-extrabold text-xl mb-4 text-gray-900">New Consultation Request</h3>
@@ -807,6 +861,7 @@ const PatientAppointments = ({ db, userId, appId, userName }) => {
                   <div className="flex justify-end space-x-3"><button type="button" onClick={()=>setIsBooking(false)} className="px-6 py-3 text-gray-600 font-bold hover:bg-gray-100 rounded-xl transition">Cancel</button><button type="submit" className="px-8 py-3 bg-gray-900 text-white font-bold rounded-xl shadow-md hover:bg-black transition">Submit Request</button></div>
               </form>
           )}
+
           <div className="space-y-6">
               {appointments.length === 0 ? <p className="text-center text-gray-500 p-12 bg-white rounded-3xl border border-gray-100 shadow-sm">You have no appointment history.</p> : appointments.map(a => (
                   <div key={a.id} className="bg-white p-6 sm:p-8 rounded-3xl shadow-sm border border-gray-200 hover:shadow-md transition">
@@ -822,6 +877,7 @@ const PatientAppointments = ({ db, userId, appId, userName }) => {
       </div>
   );
 };
+
 
 const HomePage = ({ onNavigate }) => (
   <div className="h-full flex flex-col items-center justify-center bg-gradient-to-r from-blue-500 to-cyan-500 overflow-hidden p-4 sm:p-8">
@@ -847,8 +903,7 @@ const PredictionPage = ({ db, userId, authReady, appId }) => {
   useEffect(() => {
     if (!authReady || !userId || !db || !appId) return;
     try {
-      const historyCollectionRef = collection(db, `artifacts/${appId}/users/${userId}/symptom_history`);
-      const q = query(historyCollectionRef, orderBy('timestamp', 'desc'), limit(5));
+      const q = query(collection(db, `artifacts/${appId}/users/${userId}/symptom_history`), orderBy('timestamp', 'desc'), limit(5));
       const unsubscribe = onSnapshot(q, (snapshot) => setHistory(snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id }))));
       return () => unsubscribe();
     } catch (e) { console.error(e); }
@@ -872,18 +927,22 @@ const PredictionPage = ({ db, userId, authReady, appId }) => {
     if (selectedSymptoms.length === 0) return;
     setIsLoading(true); setPredictionResult(null);
     setTimeout(() => document.getElementById('prediction-results')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 100);
+
     const userQuery = `The patient is a ${age} year old ${gender}. Symptoms: ${selectedSymptoms.join(', ')}. Act as a professional medical analyst. Provide top 3 differential diagnoses, confidence score (0.0 to 1.0), and concise next steps. Focus strictly on JSON output.`;
+
     try {
       const payload = { contents: [{ parts: [{ text: userQuery }] }], generationConfig: { responseMimeType: "application/json", responseSchema: JSON_SCHEMA } };
       const response = await fetchWithBackoff(GEMINI_API_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
       const result = await response.json();
       const parsedResult = JSON.parse(result.candidates?.[0]?.content?.parts?.[0]?.text);
       setPredictionResult(parsedResult);
+      
       if (db && userId && appId) {
-        const historyCollectionRef = collection(db, `artifacts/${appId}/users/${userId}/symptom_history`);
-        await setDoc(doc(historyCollectionRef), { symptoms: selectedSymptoms, age, gender, result: parsedResult, timestamp: serverTimestamp() });
+        await setDoc(doc(collection(db, `artifacts/${appId}/users/${userId}/symptom_history`)), { symptoms: selectedSymptoms, age, gender, result: parsedResult, timestamp: serverTimestamp() });
       }
-    } catch (error) { setPredictionResult({ error: `Could not retrieve prediction. Error: ${error.message}` }); } finally { setIsLoading(false); }
+    } catch (error) {
+      setPredictionResult({ error: `Could not retrieve prediction. Error: ${error.message}` });
+    } finally { setIsLoading(false); }
   }, [selectedSymptoms, age, gender, db, userId, appId, fetchWithBackoff]);
 
   const toggleSymptom = (s) => setSelectedSymptoms(p => p.includes(s) ? p.filter(x => x !== s) : [...p, s]);
@@ -896,13 +955,15 @@ const PredictionPage = ({ db, userId, authReady, appId }) => {
   return (
     <div className="p-4 sm:p-8 max-w-7xl mx-auto w-full animate-fadeInUp">
       <div className="mb-6"><h2 className="text-3xl font-extrabold text-gray-900">Symptom Assessment</h2><p className="text-gray-500">Select symptoms to get an initial, non-diagnostic AI triage.</p></div>
+
       <div className="bg-white/80 backdrop-blur-lg shadow-sm rounded-2xl border border-gray-200/50 p-6 mb-6">
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
           <label className="block"><span className="text-sm font-bold text-gray-700">Age:</span><input type="number" value={age} onChange={e => setAge(Math.max(1, parseInt(e.target.value) || 1))} className="mt-1 w-full p-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none" /></label>
-          <label className="block"><span className="text-sm font-bold text-gray-700">Gender:</span><select value={gender} onChange={e => setGender(e.target.value)} className="mt-1 w-full p-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none"><option>Male</option><option>Female</option><option>Other</option></select></label>
-          <label className="block"><span className="text-sm font-bold text-gray-700">Search:</span><input type="text" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} placeholder="e.g., pain, fever..." className="mt-1 w-full p-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none" /></label>
+          <label className="block"><span className="text-sm font-bold text-gray-700">Gender:</span><select value={gender} onChange={e => setGender(e.target.value)} className="mt-1 w-full p-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none bg-white"><option>Male</option><option>Female</option><option>Other</option></select></label>
+          <label className="block sm:col-span-1"><span className="text-sm font-medium text-gray-600">Search Symptoms:</span><input type="text" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} placeholder="e.g., pain, fever..." className="mt-1 w-full p-3 border border-gray-300 rounded-xl focus:ring-blue-500 focus:border-blue-500" /></label>
         </div>
       </div>
+
       <div className="flex flex-col lg:flex-row gap-6">
         <div className="lg:w-1/2 flex flex-col bg-white/80 backdrop-blur-lg shadow-sm rounded-2xl border border-gray-200/50 p-5">
           <div className="flex space-x-2 overflow-x-auto pb-3 mb-2 border-b border-gray-100 flex-shrink-0 hide-scrollbar">
@@ -912,31 +973,47 @@ const PredictionPage = ({ db, userId, authReady, appId }) => {
             {filteredSymptoms.map(symptom => <button key={symptom} onClick={() => toggleSymptom(symptom)} className={`p-3 text-sm h-fit rounded-xl text-left transition-all ${selectedSymptoms.includes(symptom) ? 'bg-blue-600 text-white font-bold shadow-md' : 'bg-gray-50 text-gray-700 font-medium hover:bg-gray-100 border border-gray-200/50'}`}>{symptom}</button>)}
           </div>
         </div>
+
         <div className="lg:w-1/2 flex flex-col bg-white/80 backdrop-blur-lg shadow-sm rounded-2xl border border-gray-200/50 p-5">
           <h3 className="text-lg font-bold text-gray-900 mb-3">Selected ({selectedSymptoms.length})</h3>
           <div className="flex-grow flex flex-wrap content-start gap-2 bg-gray-50 rounded-xl p-4 border border-dashed border-gray-300 overflow-y-auto min-h-[150px] max-h-[250px]">
-            {selectedSymptoms.length === 0 ? <p className="text-gray-400 italic m-auto text-sm">Start selecting symptoms...</p> : selectedSymptoms.map(symptom => <div key={symptom} className="flex h-fit items-center bg-blue-100 text-blue-800 text-xs font-bold px-3 py-1.5 rounded-full">{symptom} <button onClick={() => toggleSymptom(symptom)} className="ml-2 text-blue-600 hover:text-red-500"><Icon name="x" size={14} /></button></div>)}
+            {selectedSymptoms.length === 0 ? <p className="text-gray-400 italic m-auto text-sm">Start selecting symptoms...</p> : 
+              selectedSymptoms.map(symptom => <div key={symptom} className="flex h-fit items-center bg-blue-100 text-blue-800 text-xs font-bold px-3 py-1.5 rounded-full">{symptom} <button onClick={() => toggleSymptom(symptom)} className="ml-2 text-blue-600 hover:text-red-500"><Icon name="x" size={14} /></button></div>)
+            }
           </div>
-          <div className="flex justify-end space-x-3 mt-4"><button onClick={() => setSelectedSymptoms([])} disabled={selectedSymptoms.length===0} className="px-5 py-2.5 text-sm font-bold text-gray-600 bg-gray-200 rounded-xl disabled:opacity-50">Clear</button><button onClick={handlePrediction} disabled={selectedSymptoms.length===0 || isLoading || !authReady} className="px-6 py-2.5 text-white font-bold bg-blue-600 hover:bg-blue-700 rounded-xl shadow-md disabled:opacity-50 transition-colors">{isLoading ? "Analyzing..." : "Get AI Triage"}</button></div>
+          <div className="flex justify-end space-x-3 mt-4">
+            <button onClick={() => setSelectedSymptoms([])} disabled={selectedSymptoms.length===0} className="px-5 py-2.5 text-sm font-bold text-gray-600 bg-gray-200 rounded-xl disabled:opacity-50">Clear</button>
+            <button onClick={handlePrediction} disabled={selectedSymptoms.length===0 || isLoading || !authReady} className="px-6 py-2.5 text-white font-bold bg-blue-600 hover:bg-blue-700 rounded-xl shadow-md disabled:opacity-50 transition-colors">{isLoading ? "Analyzing..." : "Get AI Triage"}</button>
+          </div>
         </div>
       </div>
+
       <div id="prediction-results" className="mt-8">
-        {isLoading && <div className="space-y-4"><SkeletonCard /><SkeletonCard /></div>}
-        {isEmergency && !isLoading && <div className="bg-red-50 border border-red-200 p-5 rounded-2xl mb-6 flex items-start text-red-800 animate-fadeIn"><Icon name="alertTriangle" size={28} className="mt-0.5 flex-shrink-0" color="#ef4444" /><div className="ml-4"><h4 className="font-extrabold text-lg">EMERGENCY WARNING</h4><p className="text-sm mt-1">Based on symptoms, <strong>seek professional medical help immediately.</strong></p></div></div>}
+        {isLoading && <div className="space-y-4 w-full"><SkeletonCard /><SkeletonCard /></div>}
+        {isEmergency && !isLoading && (
+          <div className="bg-red-50 border border-red-200 p-5 rounded-2xl mb-6 flex items-start text-red-800 animate-fadeIn w-full">
+            <Icon name="alertTriangle" size={28} className="mt-0.5 flex-shrink-0" color="#ef4444" />
+            <div className="ml-4"><h4 className="font-extrabold text-lg">EMERGENCY WARNING</h4><p className="text-sm mt-1">Based on symptoms, <strong>seek professional medical help immediately.</strong></p></div>
+          </div>
+        )}
         {predictionResult && !isLoading && !predictionResult.error && (
-          <div className="space-y-4 animate-fadeInUp">
+          <div className="space-y-4 animate-fadeInUp w-full">
              <h3 className="text-2xl font-extrabold text-gray-900 mb-2 border-b border-gray-200 pb-3">AI Diagnostic Report</h3>
              <p className="text-xs text-amber-600 font-bold mb-4 bg-amber-50 p-2 rounded-lg border border-amber-200 inline-block"><Icon name="alertTriangle" size={12} className="inline mr-1" /> Educational information only. Consult qualified healthcare professionals for medical advice.</p>
             {predictionResult.predictions.map((p, index) => {
               const confidencePercent = Math.round(p.confidence * 100);
               const barColor = confidencePercent > 70 ? 'bg-emerald-500' : confidencePercent > 40 ? 'bg-amber-500' : 'bg-rose-500';
               return (
-                <div key={index} className="p-6 rounded-2xl border border-gray-100 bg-white shadow-sm"><div className="flex justify-between items-center mb-3"><h4 className="font-extrabold text-xl text-gray-900">{p.disease}</h4><span className={`text-sm font-extrabold px-3 py-1 rounded-lg ${confidencePercent > 70 ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>{confidencePercent}%</span></div><div className="w-full bg-gray-100 rounded-full h-2 mb-4 overflow-hidden"><div className={`h-2 rounded-full ${barColor} transition-all duration-1000`} style={{ width: `${confidencePercent}%` }}></div></div><p className="text-sm text-gray-600 leading-relaxed">{p.description}</p></div>
+                <div key={index} className="p-6 rounded-2xl border border-gray-100 bg-white shadow-sm">
+                  <div className="flex justify-between items-center mb-3"><h4 className="font-extrabold text-xl text-gray-900">{p.disease}</h4><span className={`text-sm font-extrabold px-3 py-1 rounded-lg ${confidencePercent > 70 ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>{confidencePercent}%</span></div>
+                  <div className="w-full bg-gray-100 rounded-full h-2 mb-4 overflow-hidden"><div className={`h-2 rounded-full ${barColor} transition-all duration-1000`} style={{ width: `${confidencePercent}%` }}></div></div>
+                  <p className="text-sm text-gray-600 leading-relaxed">{p.description}</p>
+                </div>
               );
             })}
           </div>
         )}
-        {predictionResult?.error && !isLoading && <div className="p-5 bg-rose-50 border border-rose-200 rounded-2xl text-rose-800 font-mono text-sm">{predictionResult.error}</div>}
+        {predictionResult?.error && !isLoading && <div className="p-5 bg-rose-50 border border-rose-200 rounded-2xl text-rose-800 font-mono text-sm w-full">{predictionResult.error}</div>}
       </div>
     </div>
   );
@@ -972,6 +1049,7 @@ const DocBotPage = ({ db, userId, authReady, appId }) => {
       const apiHistory = chatHistory.map(msg => ({ role: msg.role === 'ai' ? 'model' : 'user', parts: [{ text: msg.text }] }));
       apiHistory.push({ role: 'user', parts: [{ text: userMessage }] });
       const payload = { contents: apiHistory, tools: [{ "google_search": {} }], systemInstruction: { parts: [{ text: CHAT_BOT_SYSTEM_INSTRUCTION }] } };
+      
       const res = await fetch(GEMINI_API_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
       const result = await res.json();
       const aiText = result.candidates?.[0]?.content?.parts?.[0]?.text || "Sorry, error processing.";
@@ -984,7 +1062,10 @@ const DocBotPage = ({ db, userId, authReady, appId }) => {
   return (
     <div className="h-full p-4 md:p-8 max-w-4xl mx-auto w-full flex flex-col animate-fadeInUp">
       <div className="bg-white/90 backdrop-blur-xl shadow-sm rounded-3xl border border-gray-200/50 flex flex-col flex-grow overflow-hidden">
-        <div className="px-6 py-4 border-b border-gray-100 bg-gray-50 flex items-center"><Icon name="messageSquare" className="text-blue-600 mr-3" size={24} /><div><h2 className="text-lg font-bold text-gray-900">DocBot Assistant</h2><p className="text-xs font-semibold text-emerald-500">Online</p></div></div>
+        <div className="px-6 py-4 border-b border-gray-100 bg-gray-50 flex items-center">
+          <Icon name="messageSquare" className="text-blue-600 mr-3" size={24} />
+          <div><h2 className="text-lg font-bold text-gray-900">DocBot Assistant</h2><p className="text-xs font-semibold text-emerald-500">Online</p></div>
+        </div>
         <div className="flex-grow overflow-y-auto p-4 md:p-6 bg-gray-50/30 flex flex-col space-y-4">
           {chatHistory.length === 0 && !isTyping ? (
             <div className="m-auto text-center max-w-sm"><Icon name="stethoscope" size={40} className="text-blue-400 mx-auto mb-4" /><p className="text-gray-500 mb-6">Ask me any general health questions.</p><div className="space-y-2">{["What are flu symptoms?", "How to reduce stress?"].map(q => <button key={q} onClick={() => handleSend(q)} className="block w-full p-3 bg-white border border-gray-200 rounded-xl text-sm font-semibold text-gray-700 hover:text-blue-600 shadow-sm text-left">"{q}"</button>)}</div></div>
@@ -1015,10 +1096,15 @@ const ContactPage = () => {
   );
 };
 
+
+// =================================================================================
+// --- MAIN APP COMPONENT (CONTROLS AUTH & ROUTING) ---
+// =================================================================================
+
 const App = () => {
   const [userId, setUserId] = useState(null);
-  const [userRole, setUserRole] = useState(null); 
-  const [userStatus, setUserStatus] = useState(null); 
+  const [userRole, setUserRole] = useState(null); // 'patient', 'doctor', 'attender', 'admin'
+  const [userStatus, setUserStatus] = useState(null); // 'approved', 'pending'
   const [authReady, setAuthReady] = useState(false);
   const [currentPage, setCurrentPage] = useState('');
   const [initError, setInitError] = useState(null);
