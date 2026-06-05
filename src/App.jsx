@@ -1,15 +1,54 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-// --- Firebase SDK Imports (Using standard package imports) ---
+// --- Firebase SDK Imports ---
 import { initializeApp } from 'firebase/app';
-import { getAuth, signInAnonymously, onAuthStateChanged } from 'firebase/auth'; // signInWithCustomToken removed as we only use anonymous sign-in now
-import { getFirestore, collection, doc, setDoc, query, orderBy, limit, onSnapshot, serverTimestamp, setLogLevel } from 'firebase/firestore';
+import { 
+  getAuth, 
+  createUserWithEmailAndPassword, 
+  signInWithEmailAndPassword, 
+  signOut, 
+  onAuthStateChanged,
+  updateProfile,
+  signInWithCustomToken
+} from 'firebase/auth';
+import { 
+  getFirestore, 
+  collection, 
+  doc, 
+  setDoc, 
+  getDoc,
+  query, 
+  orderBy, 
+  limit, 
+  onSnapshot, 
+  serverTimestamp, 
+  setLogLevel 
+} from 'firebase/firestore';
 
+// =================================================================================
+// --- GLOBAL ENVIRONMENT & API CONFIGURATION ---
+// =================================================================================
+const getEnvVar = (key) => {
+  try { return import.meta.env[key]; } catch(e) { return undefined; }
+};
 
-// --- API Configuration ---
-// Read securely from Vercel Environment Variables
-const env = (typeof import.meta !== 'undefined' && import.meta.env) ? import.meta.env : {};
-const apiKey = env.VITE_VAIDYA_MITHRA_GEMINI_KEY || "";
+const apiKey = getEnvVar('VITE_VAIDYA_MITHRA_GEMINI_KEY') || "";
 const GEMINI_API_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
+
+// Global Firebase Initialization
+let app, auth, db, globalAppId;
+try {
+  const fbConfigStr = typeof __firebase_config !== 'undefined' ? __firebase_config : getEnvVar('VITE_FIREBASE_CONFIG');
+  
+  if (fbConfigStr && fbConfigStr !== '{}') {
+    const config = JSON.parse(fbConfigStr);
+    app = initializeApp(config);
+    auth = getAuth(app);
+    db = getFirestore(app);
+    globalAppId = typeof __app_id !== 'undefined' ? __app_id : (config.appId || 'default-app-id');
+  }
+} catch (e) {
+  console.error("Firebase Global Initialization Error:", e);
+}
 
 // --- Structured JSON Schema for Disease Prediction ---
 const JSON_SCHEMA = {
@@ -17,7 +56,7 @@ const JSON_SCHEMA = {
   properties: {
     emergency_flag: {
       type: "BOOLEAN",
-      description: "True if symptoms indicate a severe, life-threatening emergency (e.g., severe chest pain, inability to breathe, stroke signs). False otherwise."
+      description: "True if symptoms indicate severe emergency. False otherwise."
     },
     predictions: {
       type: "ARRAY",
@@ -26,8 +65,8 @@ const JSON_SCHEMA = {
         type: "OBJECT",
         properties: {
           disease: { type: "STRING", description: "The name of the potential condition." },
-          confidence: { type: "NUMBER", description: "A confidence score between 0.0 and 1.0 (e.g., 0.85 for 85%)." },
-          description: { type: "STRING", description: "A brief, non-alarming, and clear overview of the disease and suggested next steps (e.g., call a doctor in 24 hours, monitor symptoms)." }
+          confidence: { type: "NUMBER", description: "Confidence score between 0.0 and 1.0." },
+          description: { type: "STRING", description: "Brief, clear overview and suggested next steps." }
         },
         required: ["disease", "confidence", "description"]
       }
@@ -36,191 +75,60 @@ const JSON_SCHEMA = {
   required: ["emergency_flag", "predictions"]
 };
 
-// --- Symptom Data & Categories ---
 const ALL_SYMPTOMS_CATEGORIZED = {
-  General: [
-    'Fatigue', 'Fever', 'Headache', 'Dizziness', 'Nausea', 'Vomiting', 'Body Ache',
-    'Chills', 'Sore Throat', 'Diarrhea', 'Constipation', 'Runny Nose'
-  ],
-  Respiratory: [
-    'Cough', 'Shortness of Breath', 'Wheezing', 'Chest Tightness', 'Difficulty Breathing',
-    'Sputum Production', 'Sneezing', 'Hoarseness'
-  ],
-  Cardiac: [
-    'Chest Pain', 'Palpitations', 'Fainting', 'Swelling of Legs/Ankles',
-    'Rapid Heartbeat', 'Lightheadedness', 'Pain Radiating to Jaw/Arm'
-  ],
-  Skin: [
-    'Rash', 'Itching', 'Hives', 'Dry Skin', 'Jaundice', 'Bruising',
-    'Change in Mole appearance', 'Redness/Inflammation'
-  ],
-  Musculoskeletal: [
-    'Joint Pain', 'Muscle Pain', 'Back Pain', 'Stiffness', 'Swollen Joints',
-    'Limited Range of Motion', 'Numbness/Tingling'
-  ],
+  General: ['Fatigue', 'Fever', 'Headache', 'Dizziness', 'Nausea', 'Vomiting', 'Body Ache', 'Chills', 'Sore Throat', 'Diarrhea', 'Constipation', 'Runny Nose'],
+  Respiratory: ['Cough', 'Shortness of Breath', 'Wheezing', 'Chest Tightness', 'Difficulty Breathing', 'Sputum Production', 'Sneezing', 'Hoarseness'],
+  Cardiac: ['Chest Pain', 'Palpitations', 'Fainting', 'Swelling of Legs/Ankles', 'Rapid Heartbeat', 'Lightheadedness', 'Pain Radiating to Jaw/Arm'],
+  Skin: ['Rash', 'Itching', 'Hives', 'Dry Skin', 'Jaundice', 'Bruising', 'Change in Mole appearance', 'Redness/Inflammation'],
+  Musculoskeletal: ['Joint Pain', 'Muscle Pain', 'Back Pain', 'Stiffness', 'Swollen Joints', 'Limited Range of Motion', 'Numbness/Tingling'],
 };
 
 const SYMPTOM_CATEGORIES = Object.keys(ALL_SYMPTOMS_CATEGORIZED);
 
 // =================================================================================
-// --- HELPER & LAYOUT COMPONENTS ---
+// --- ICONS & BRANDING ---
 // =================================================================================
-
-/**
- * 1. Icon Component (Simulating Lucide Icons)
- * (Added 'home' icon)
- */
 const Icon = ({ name, size = 20, color = 'currentColor', className = '' }) => {
   const icons = {
-    home: (
-      <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
-    ),
-    stethoscope: (
-      <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M12 2a3 3 0 0 0-3 3v12a3 3 0 0 0 3 3h6a3 3 0 0 0 3-3V5a3 3 0 0 0-3-3h-6zM9 12h-4a2 2 0 0 0-2 2v2M21 12h-4a2 2 0 0 1-2 2v2M12 9v6M15 15v-6M18 15v-6M9 15v-6"/></svg>
-    ),
-    messageSquare: (
-        <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
-    ),
-    hospital: (
-        <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M12 11v6m-3-3h6m7 0h-3v4a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2v-4H3m7-10l-1 4H5l-1 4m16-8l-1 4h-4l-1 4m4 4H4a2 2 0 0 0-2 2v2a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-2a2 2 0 0 0-2-2z"/></svg>
-    ),
-    history: (
-        <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M12 2v10l4-4m-6-6a9 9 0 1 1 0 18a9 9 0 0 1 0-18z"/></svg>
-    ),
-    mail: (
-        <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
-    ),
-    phone: (
-        <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-4.75-4.75A19.79 19.79 0 0 1 2.08 3.18 2 2 0 0 1 4.08 1h3a2 2 0 0 1 2 1.72 17.51 17.51 0 0 0 .15 3.37 2 2 0 0 1-1.28 2.13l-1.3 1.3A15 15 0 0 0 15 16.5l1.3-1.3a2 2 0 0 1 2.13-1.28A17.51 17.51 0 0 0 20.28 16.92z"/></svg>
-    ),
-    alertTriangle: (
-        <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
-    ),
-    chevronRight: (
-        <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><polyline points="9 18 15 12 9 6"/></svg>
-    ),
-    send: (
-        <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
-    ),
-    x: (
-        <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-    ),
-    lightbulb: (
-      <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M15.09 16.05A6.47 6.47 0 0 1 12 21.03a6.47 6.47 0 0 1-3.09-4.98c0-.62.07-1.23.21-1.81l.15-.62.62-.15c.58-.14 1.19-.21 1.81-.21h0c.62 0 1.23.07 1.81.21l.62.15.15.62c.14.58.21 1.19.21 1.81zM12 21.03V22m0-11.03V4a2 2 0 1 1 4 0v2.03M8 6.03V4a2 2 0 1 0-4 0v2.03m5.5 10.44C13.5 16 13 14.83 13 14c0-1.04.2-1.9.5-2.65M10.5 16c.5.5 1 1.17 1 2 0 1.04-.2 1.9-.5 2.65m-2-12.09c.39-.28.8-.53 1.24-.75M14.76 3.18c.44.22.85.47 1.24.75m-6 12.09c-.39.28-.8.53-1.24.75M9.24 3.18c-.44.22-.85.47-1.24.75M12 6.03V4m0 17.03V21m-3.5-13.44c-.5.5-1 1.17-1 2 0 1.04.2 1.9.5 2.65m6.5-2.65c.5.5 1 1.17 1 2 0 1.04-.2 1.9-.5 2.65"/></svg>
-    ),
+    home: <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>,
+    stethoscope: <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M12 2a3 3 0 0 0-3 3v12a3 3 0 0 0 3 3h6a3 3 0 0 0 3-3V5a3 3 0 0 0-3-3h-6zM9 12h-4a2 2 0 0 0-2 2v2M21 12h-4a2 2 0 0 1-2 2v2M12 9v6M15 15v-6M18 15v-6M9 15v-6"/></svg>,
+    messageSquare: <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>,
+    hospital: <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M12 11v6m-3-3h6m7 0h-3v4a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2v-4H3m7-10l-1 4H5l-1 4m16-8l-1 4h-4l-1 4m4 4H4a2 2 0 0 0-2 2v2a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-2a2 2 0 0 0-2-2z"/></svg>,
+    history: <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M12 2v10l4-4m-6-6a9 9 0 1 1 0 18a9 9 0 0 1 0-18z"/></svg>,
+    user: <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>,
+    users: <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>,
+    calendar: <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>,
+    fileText: <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>,
+    activity: <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>,
+    shield: <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>,
+    settings: <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>,
+    bell: <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>,
+    logOut: <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>,
+    mail: <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>,
+    phone: <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-4.75-4.75A19.79 19.79 0 0 1 2.08 3.18 2 2 0 0 1 4.08 1h3a2 2 0 0 1 2 1.72 17.51 17.51 0 0 0 .15 3.37 2 2 0 0 1-1.28 2.13l-1.3 1.3A15 15 0 0 0 15 16.5l1.3-1.3a2 2 0 0 1 2.13-1.28A17.51 17.51 0 0 0 20.28 16.92z"/></svg>,
+    alertTriangle: <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>,
+    chevronRight: <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><polyline points="9 18 15 12 9 6"/></svg>,
+    send: <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>,
+    x: <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>,
+    menu: <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/></svg>,
+    search: <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>,
+    checkCircle: <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>,
+    clock: <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
   };
   return icons[name] || <div style={{ width: size, height: size }}>?</div>;
 };
 
-/**
- * 2. New Logo Component
- */
-const Logo = () => (
-  <div className="flex items-center flex-shrink-0">
-    <div className="p-1 bg-blue-600 rounded-lg">
+const Logo = ({ className = "" }) => (
+  <div className={`flex items-center flex-shrink-0 ${className}`}>
+    <div className="p-1.5 bg-gradient-to-br from-blue-600 to-indigo-600 rounded-xl shadow-md">
       <Icon name="stethoscope" size={24} color="white" />
     </div>
-    <span className="text-2xl font-bold text-blue-800 ml-3">
-      Vaidya <span className="text-blue-600">Mithra</span>
+    <span className="text-2xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-blue-900 to-indigo-800 ml-3 tracking-tight">
+      Vaidya<span className="text-blue-600 font-extrabold">Mithra</span>
     </span>
   </div>
 );
 
-/**
- * 3. Navigation Bar (Modified for State-based Navigation and Mobile Menu)
- */
-const NavBar = ({ currentPage, onNavigate }) => {
-    const [isMenuOpen, setIsMenuOpen] = useState(false);
-    
-    const navItems = [
-        { id: "home", name: "Home", icon: "home" },
-        { id: "prediction", name: "Prediction", icon: "stethoscope" },
-        { id: "docbot", name: "DocBot", icon: "messageSquare" },
-        { id: "hospitals", name: "Hospitals", icon: "hospital" },
-        { id: "contact", name: "Contact", icon: "mail" },
-    ];
-
-    const handleNavigation = (id) => {
-        onNavigate(id);
-        setIsMenuOpen(false); // Close menu on navigation
-    };
-
-    return (
-        <nav className="fixed top-0 left-0 right-0 z-50 bg-white/80 backdrop-blur-md shadow-lg border-b border-gray-200/80 flex-shrink-0">
-            <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-                <div className="flex justify-between items-center h-16">
-                    <a href="#" onClick={(e) => { e.preventDefault(); handleNavigation('home'); }} className="no-underline">
-                        <Logo />
-                    </a>
-                    
-                    {/* Desktop Menu */}
-                    <div className="hidden md:flex space-x-4">
-                        {navItems.map((item) => {
-                            const isActive = currentPage === item.id;
-                            return (
-                                <a
-                                    key={item.id}
-                                    href="#"
-                                    onClick={(e) => { e.preventDefault(); handleNavigation(item.id); }}
-                                    className={`px-3 py-2 rounded-lg text-sm font-medium flex items-center transition duration-150 ${
-                                        isActive
-                                            ? 'bg-blue-100 text-blue-700'
-                                            : 'text-gray-700 hover:bg-blue-50 hover:text-blue-600'
-                                    }`}
-                                >
-                                    <Icon name={item.icon} size={18} className="mr-2" color="currentColor" />
-                                    {item.name}
-                                </a>
-                            );
-                        })}
-                    </div>
-                    
-                    {/* Mobile Menu Button */}
-                    <button
-                        className="md:hidden p-2 rounded-lg text-gray-700 hover:bg-gray-100 transition"
-                        onClick={() => setIsMenuOpen(!isMenuOpen)}
-                    >
-                         {isMenuOpen ? (
-                             <Icon name="x" size={24} />
-                         ) : (
-                            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="3" y1="12" x2="21" y2="12"></line><line x1="3" y1="6" x2="21" y2="6"></line><line x1="3" y1="18" x2="21" y2="18"></line></svg>
-                         )}
-                    </button>
-                </div>
-            </div>
-
-            {/* Mobile Menu Overlay */}
-            {isMenuOpen && (
-                <div 
-                    className="md:hidden absolute top-16 left-0 w-full bg-white/95 backdrop-blur-lg shadow-lg border-t border-gray-200/80 transform origin-top transition-all duration-300 ease-out"
-                    style={{ maxHeight: 'calc(100vh - 4rem)' }}
-                >
-                    <div className="flex flex-col p-4 space-y-2">
-                        {navItems.map((item) => (
-                            <a
-                                key={item.id}
-                                href="#"
-                                onClick={(e) => { e.preventDefault(); handleNavigation(item.id); }}
-                                className={`px-4 py-3 rounded-lg text-lg font-medium flex items-center transition duration-150 ${
-                                    currentPage === item.id
-                                        ? 'bg-blue-100 text-blue-700'
-                                        : 'text-gray-800 hover:bg-blue-50'
-                                }`}
-                            >
-                                <Icon name={item.icon} size={20} className="mr-3" color="currentColor" />
-                                {item.name}
-                            </a>
-                        ))}
-                    </div>
-                </div>
-            )}
-        </nav>
-    );
-};
-
-/**
- * 4. Skeleton Loader Component
- */
 const SkeletonCard = () => (
   <div className="p-4 rounded-xl border border-gray-200 bg-gray-50 shadow-sm animate-pulse">
     <div className="flex justify-between items-center mb-3">
@@ -234,435 +142,375 @@ const SkeletonCard = () => (
   </div>
 );
 
-/**
- * 5. MODIFIED: Footer Component (Now a slim bar)
- */
 const Footer = ({ className = '' }) => (
   <div id="footer" className={`bg-white/70 backdrop-blur-sm border-t border-gray-200 py-4 px-4 sm:px-8 ${className}`}>
     <p className="text-xs text-gray-600 text-center max-w-4xl mx-auto mb-2">
       <strong>Disclaimer:</strong> This application is for informational and educational purposes only and is <strong>NOT</strong> a substitute for professional medical advice, diagnosis, or treatment. Always seek the advice of your physician with any questions you may have regarding a medical condition.
     </p>
     <p className="text-xs text-gray-500 text-center">
-      &copy; 2025 Vaidya Mithra. All rights reserved.
+      &copy; {new Date().getFullYear()} Vaidya Mithra. All rights reserved.
     </p>
   </div>
 );
 
+// =================================================================================
+// --- AUTHENTICATION SCREEN (REAL FIREBASE AUTH) ---
+// =================================================================================
+
+const AuthScreen = ({ auth, db, appId }) => {
+  const [isLogin, setIsLogin] = useState(true);
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [name, setName] = useState('');
+  const [role, setRole] = useState('patient'); // patient, doctor, attender, admin
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setError('');
+    setLoading(true);
+
+    try {
+      if (isLogin) {
+        await signInWithEmailAndPassword(auth, email, password);
+      } else {
+        const userCredential = await createUserWithEmailAndPassword(auth, email, password);
+        const user = userCredential.user;
+        await updateProfile(user, { displayName: name });
+        
+        const profileRef = doc(db, 'artifacts', appId, 'users', user.uid, 'profile', 'data');
+        await setDoc(profileRef, {
+          uid: user.uid,
+          email: user.email,
+          name: name,
+          role: role,
+          createdAt: serverTimestamp()
+        });
+      }
+    } catch (err) {
+      console.error("Auth Error:", err);
+      setError(err.message.replace("Firebase: ", ""));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-[radial-gradient(ellipse_at_top_right,_var(--tw-gradient-stops))] from-blue-100 via-white to-cyan-50 p-4">
+      <div className="absolute inset-0 bg-grid-slate-100/[0.04] bg-[size:32px_32px]"></div>
+      
+      <div className="max-w-md w-full bg-white/80 backdrop-blur-xl rounded-3xl shadow-2xl border border-white/50 p-8 z-10 relative overflow-hidden animate-fadeInUp">
+        <div className="absolute top-0 left-0 w-full h-2 bg-gradient-to-r from-blue-500 via-indigo-500 to-cyan-400"></div>
+        
+        <div className="flex justify-center mb-8">
+          <Logo className="scale-110" />
+        </div>
+        
+        <h2 className="text-3xl font-extrabold text-gray-900 text-center mb-2 tracking-tight">
+          {isLogin ? 'Welcome Back' : 'Create Account'}
+        </h2>
+        <p className="text-gray-500 text-center mb-6">
+          {isLogin ? 'Sign in to access your healthcare portal' : 'Join Vaidya Mithra today'}
+        </p>
+
+        {/* Toggle Login/Signup */}
+        <div className="flex p-1 bg-gray-100/80 rounded-xl mb-6">
+          <button 
+            onClick={() => {setIsLogin(true); setError('');}}
+            className={`flex-1 py-2 text-sm font-semibold rounded-lg transition-all duration-300 ${isLogin ? 'bg-white text-blue-700 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
+          >
+            Sign In
+          </button>
+          <button 
+            onClick={() => {setIsLogin(false); setError('');}}
+            className={`flex-1 py-2 text-sm font-semibold rounded-lg transition-all duration-300 ${!isLogin ? 'bg-white text-blue-700 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
+          >
+            Sign Up
+          </button>
+        </div>
+
+        {error && (
+          <div className="mb-4 p-3 bg-red-50 text-red-700 text-sm rounded-xl border border-red-100 flex items-start">
+            <Icon name="alertTriangle" size={16} className="mr-2 mt-0.5 flex-shrink-0" />
+            <span>{error}</span>
+          </div>
+        )}
+
+        <form onSubmit={handleSubmit} className="space-y-4">
+          {!isLogin && (
+            <>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Full Name</label>
+                <div className="relative">
+                  <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none"><Icon name="user" size={18} className="text-gray-400" /></div>
+                  <input type="text" value={name} onChange={e=>setName(e.target.value)} required className="w-full pl-10 pr-4 py-3 bg-white/50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none" placeholder="John Doe" />
+                </div>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Select Role</label>
+                <div className="relative">
+                  <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none"><Icon name="users" size={18} className="text-gray-400" /></div>
+                  <select value={role} onChange={e=>setRole(e.target.value)} className="w-full pl-10 pr-4 py-3 bg-white/50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none appearance-none">
+                    <option value="patient">Patient</option>
+                    <option value="doctor">Doctor</option>
+                    <option value="attender">Attender</option>
+                    <option value="admin">Super Admin</option>
+                  </select>
+                </div>
+              </div>
+            </>
+          )}
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Email Address</label>
+            <div className="relative">
+              <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none"><Icon name="mail" size={18} className="text-gray-400" /></div>
+              <input type="email" value={email} onChange={e=>setEmail(e.target.value)} required className="w-full pl-10 pr-4 py-3 bg-white/50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none" placeholder="name@example.com" />
+            </div>
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Password</label>
+            <div className="relative">
+              <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none"><Icon name="shield" size={18} className="text-gray-400" /></div>
+              <input type="password" value={password} onChange={e=>setPassword(e.target.value)} required minLength={6} className="w-full pl-10 pr-4 py-3 bg-white/50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none" placeholder="••••••••" />
+            </div>
+          </div>
+
+          <button type="submit" disabled={loading} className="w-full mt-2 py-3.5 px-4 text-white font-bold rounded-xl shadow-lg transition-all duration-300 transform hover:-translate-y-0.5 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 flex items-center justify-center disabled:opacity-70">
+            {loading ? 'Processing...' : (isLogin ? 'Sign In to Portal' : 'Create Account')}
+            {!loading && <Icon name="chevronRight" size={20} className="ml-2" />}
+          </button>
+        </form>
+      </div>
+    </div>
+  );
+};
 
 // =================================================================================
-// --- "PAGE" COMPONENTS ---
+// --- DYNAMIC NAVBAR ---
 // =================================================================================
 
-/**
- * PAGE 1: Home Page (Modified to fill flex-grow)
- */
+const NavBar = ({ currentPage, onNavigate, userRole, auth }) => {
+    const [isMenuOpen, setIsMenuOpen] = useState(false);
+    
+    const getNavItems = () => {
+      if (userRole === 'doctor') {
+        return [
+          { id: "doctor-home", name: "Dashboard", icon: "home" },
+          { id: "doctor-patients", name: "Patients", icon: "users" },
+          { id: "contact", name: "Support", icon: "mail" },
+        ];
+      }
+      if (userRole === 'attender') {
+        return [
+          { id: "attender-home", name: "Queue", icon: "home" },
+          { id: "contact", name: "Support", icon: "mail" },
+        ];
+      }
+      if (userRole === 'admin') {
+        return [
+          { id: "admin-home", name: "Analytics", icon: "activity" },
+          { id: "admin-users", name: "Users", icon: "users" },
+          { id: "contact", name: "Support", icon: "mail" },
+        ];
+      }
+      return [
+          { id: "home", name: "Home", icon: "home" },
+          { id: "prediction", name: "AI Triage", icon: "activity" },
+          { id: "docbot", name: "DocBot", icon: "messageSquare" },
+          { id: "hospitals", name: "Hospitals", icon: "hospital" },
+          { id: "contact", name: "Contact", icon: "mail" },
+      ];
+    };
+
+    const navItems = getNavItems();
+
+    const handleNavigation = (id) => {
+        onNavigate(id);
+        setIsMenuOpen(false);
+    };
+
+    const handleLogout = () => {
+      signOut(auth).catch(err => console.error(err));
+    };
+
+    return (
+        <nav className="fixed top-0 left-0 right-0 z-50 bg-white/80 backdrop-blur-md shadow-sm border-b border-gray-200/80 flex-shrink-0 transition-all">
+            <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+                <div className="flex justify-between items-center h-16">
+                    <a href="#" onClick={(e) => { e.preventDefault(); handleNavigation(navItems[0].id); }} className="no-underline">
+                        <Logo />
+                    </a>
+                    
+                    <div className="hidden md:flex items-center space-x-2">
+                        {navItems.map((item) => {
+                            const isActive = currentPage === item.id;
+                            return (
+                                <a
+                                    key={item.id}
+                                    href="#"
+                                    onClick={(e) => { e.preventDefault(); handleNavigation(item.id); }}
+                                    className={`px-3 py-2 rounded-xl text-sm font-semibold flex items-center transition duration-150 ${
+                                        isActive
+                                            ? 'bg-blue-50 text-blue-700'
+                                            : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
+                                    }`}
+                                >
+                                    <Icon name={item.icon} size={18} className="mr-2" color="currentColor" />
+                                    {item.name}
+                                </a>
+                            );
+                        })}
+                        <div className="w-px h-6 bg-gray-200 mx-2"></div>
+                        <button 
+                          onClick={handleLogout}
+                          className="px-3 py-2 rounded-xl text-sm font-semibold flex items-center text-red-600 hover:bg-red-50 transition duration-150"
+                        >
+                          <Icon name="logOut" size={18} className="mr-2" />
+                          Logout
+                        </button>
+                    </div>
+                    
+                    <button
+                        className="md:hidden p-2 rounded-lg text-gray-700 hover:bg-gray-100 transition"
+                        onClick={() => setIsMenuOpen(!isMenuOpen)}
+                    >
+                         {isMenuOpen ? <Icon name="x" size={24} /> : <Icon name="menu" size={24} />}
+                    </button>
+                </div>
+            </div>
+
+            {isMenuOpen && (
+                <div className="md:hidden absolute top-16 left-0 w-full bg-white/95 backdrop-blur-lg shadow-xl border-t border-gray-200/80 transform origin-top transition-all duration-300 ease-out" style={{ maxHeight: 'calc(100vh - 4rem)' }}>
+                    <div className="flex flex-col p-4 space-y-2">
+                        {navItems.map((item) => (
+                            <a
+                                key={item.id}
+                                href="#"
+                                onClick={(e) => { e.preventDefault(); handleNavigation(item.id); }}
+                                className={`px-4 py-3 rounded-xl text-lg font-medium flex items-center transition duration-150 ${
+                                    currentPage === item.id ? 'bg-blue-50 text-blue-700' : 'text-gray-700 hover:bg-gray-50'
+                                }`}
+                            >
+                                <Icon name={item.icon} size={20} className="mr-3" color="currentColor" />
+                                {item.name}
+                            </a>
+                        ))}
+                        <div className="h-px w-full bg-gray-200 my-2"></div>
+                        <button 
+                          onClick={handleLogout}
+                          className="px-4 py-3 rounded-xl text-lg font-medium flex items-center text-red-600 hover:bg-red-50 transition duration-150 text-left"
+                        >
+                          <Icon name="logOut" size={20} className="mr-3" />
+                          Sign Out
+                        </button>
+                    </div>
+                </div>
+            )}
+        </nav>
+    );
+};
+
+// =================================================================================
+// --- DASHBOARD PLACEHOLDERS FOR ROLES ---
+// =================================================================================
+
+const StatCard = ({ title, value, icon, colorClass }) => (
+  <div className="bg-white/80 backdrop-blur-lg rounded-2xl p-6 border border-gray-200/50 shadow-sm hover:shadow-md transition-shadow">
+    <div className="flex justify-between items-start">
+      <div>
+        <p className="text-sm font-medium text-gray-500 mb-1">{title}</p>
+        <h3 className="text-3xl font-extrabold text-gray-900">{value}</h3>
+      </div>
+      <div className={`p-3 rounded-xl ${colorClass}`}>
+        <Icon name={icon} size={24} />
+      </div>
+    </div>
+  </div>
+);
+
+const DoctorDashboard = () => (
+  <div className="p-6 md:p-10 max-w-7xl mx-auto animate-fadeInUp h-full overflow-y-auto">
+    <div className="mb-8">
+      <h1 className="text-3xl font-extrabold text-gray-900">Doctor Dashboard</h1>
+      <p className="text-gray-500 mt-1">Review AI patient summaries and upcoming appointments.</p>
+    </div>
+
+    <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+      <StatCard title="Today's Appointments" value="0" icon="calendar" colorClass="bg-blue-100 text-blue-600" />
+      <StatCard title="Pending Reports" value="0" icon="fileText" colorClass="bg-amber-100 text-amber-600" />
+      <StatCard title="Active Patients" value="0" icon="users" colorClass="bg-indigo-100 text-indigo-600" />
+    </div>
+
+    <div className="bg-white/80 backdrop-blur-lg rounded-2xl border border-gray-200/50 shadow-sm overflow-hidden p-8 text-center">
+      <Icon name="calendar" size={48} className="mx-auto mb-4 text-gray-300" />
+      <h3 className="text-lg font-bold text-gray-900 mb-2">No Appointments Yet</h3>
+      <p className="text-gray-500 text-sm max-w-md mx-auto">When patients book consultations through the platform, their AI-summarized triage reports will appear here for your review.</p>
+    </div>
+  </div>
+);
+
+const AttenderDashboard = () => (
+  <div className="p-6 md:p-10 max-w-7xl mx-auto animate-fadeInUp h-full overflow-y-auto">
+    <div className="mb-8">
+      <h1 className="text-3xl font-extrabold text-gray-900">Attender Queue</h1>
+      <p className="text-gray-500 mt-1">Manage incoming requests and schedule assignments.</p>
+    </div>
+
+    <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
+      <StatCard title="Waiting in Queue" value="0" icon="users" colorClass="bg-rose-100 text-rose-600" />
+      <StatCard title="Doctors Available" value="Active" icon="stethoscope" colorClass="bg-emerald-100 text-emerald-600" />
+    </div>
+
+    <div className="bg-white/80 backdrop-blur-lg rounded-2xl border border-gray-200/50 shadow-sm overflow-hidden p-8 text-center">
+      <Icon name="activity" size={48} className="mx-auto mb-4 text-gray-300" />
+      <h3 className="text-lg font-bold text-gray-900 mb-2">Queue is Empty</h3>
+      <p className="text-gray-500 text-sm max-w-md mx-auto">You're all caught up. Patient consultation requests will populate this queue for assignment to doctors.</p>
+    </div>
+  </div>
+);
+
+const AdminDashboard = () => (
+  <div className="p-6 md:p-10 max-w-7xl mx-auto animate-fadeInUp h-full overflow-y-auto">
+    <div className="mb-8">
+      <h1 className="text-3xl font-extrabold text-gray-900">Platform Analytics</h1>
+      <p className="text-gray-500 mt-1">Super Admin overview of the Vaidya Mithra OS.</p>
+    </div>
+
+    <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
+      <StatCard title="Total Users" value="124" icon="users" colorClass="bg-blue-100 text-blue-600" />
+      <StatCard title="Active Doctors" value="12" icon="stethoscope" colorClass="bg-emerald-100 text-emerald-600" />
+      <StatCard title="Active Patients" value="98" icon="activity" colorClass="bg-purple-100 text-purple-600" />
+      <StatCard title="System Health" value="100%" icon="shield" colorClass="bg-green-100 text-green-600" />
+    </div>
+  </div>
+);
+
+// =================================================================================
+// --- PATIENT COMPONENTS (ORIGINAL FEATURES) ---
+// =================================================================================
+
 const HomePage = ({ onNavigate }) => (
   <div className="h-full flex flex-col items-center justify-center bg-gradient-to-r from-blue-500 to-cyan-500 overflow-hidden p-4 sm:p-8">
     <div className="absolute inset-0 opacity-10 bg-cover bg-center" style={{backgroundImage: "url('https://placehold.co/1920x800/ffffff/000000?text=Health+Data+Analysis')"}}></div>
     
     <div className="z-10 text-center text-white p-4 max-w-4xl">
-      <h1 
-        className="text-4xl md:text-6xl font-extrabold mb-4 drop-shadow-lg tracking-tight opacity-0"
-        style={{ animation: 'fadeInUp 0.6s 0.2s ease-out forwards' }}
-      >
+      <h1 className="text-4xl md:text-6xl font-extrabold mb-4 drop-shadow-lg tracking-tight animate-fadeInUp">
         Welcome to Vaidya Mithra
       </h1>
-      <p 
-        className="text-lg md:text-xl mb-8 font-light drop-shadow-md opacity-0"
-        style={{ animation: 'fadeInUp 0.6s 0.4s ease-out forwards' }}
-      >
+      <p className="text-lg md:text-xl mb-8 font-light drop-shadow-md animate-fadeInUp" style={{animationDelay: '0.1s'}}>
         Get non-diagnostic insights and next steps in seconds. Powered by Gemini AI for responsible health guidance.
       </p>
-      <a
-        href="#prediction"
-        onClick={(e) => { e.preventDefault(); onNavigate('prediction'); }}
-        className="inline-flex items-center px-8 py-3 bg-green-500 text-white text-lg font-semibold rounded-full shadow-xl hover:bg-green-600 transition-all duration-300 transform hover:scale-105 opacity-0"
-        style={{ animation: 'fadeInUp 0.6s 0.6s ease-out forwards' }}
-      >
-        Start Health Check
-        <Icon name="chevronRight" size={24} className="ml-2" color="white" />
+      <a href="#prediction" onClick={(e) => { e.preventDefault(); onNavigate('prediction'); }} className="inline-flex items-center px-8 py-3 bg-white text-blue-700 text-lg font-bold rounded-xl shadow-xl hover:bg-gray-50 transition-all duration-300 transform hover:scale-105 animate-fadeInUp" style={{animationDelay: '0.2s'}}>
+        Start AI Triage
+        <Icon name="chevronRight" size={24} className="ml-2" />
       </a>
     </div>
   </div>
 );
 
-/**
- * PAGE 2: Hospital Finder Page (Modified to center in viewport)
- */
-const HospitalPage = () => {
-  const [status, setStatus] = useState('ready'); // ready, loading, found, error
-
-  const findHospitals = () => {
-    if (!navigator.geolocation) {
-      setStatus('error');
-      console.warn("User Alert: Geolocation is not supported by your browser. Please search manually.");
-      return;
-    }
-
-    setStatus('loading');
-    navigator.geolocation.getCurrentPosition(
-      (position) => {
-        const lat = position.coords.latitude;
-        const lon = position.coords.longitude;
-        setStatus('found');
-
-        // Construct Google Maps URL for nearby hospitals
-        const mapsUrl = `https://www.google.com/maps/search/?api=1&query=hospitals+near+${lat},${lon}`;
-        
-        // Redirect user to Google Maps in a new tab
-        window.open(mapsUrl, '_blank');
-      },
-      (error) => {
-        console.error("Geolocation error:", error);
-        setStatus('error');
-        console.warn(`User Alert: Error getting location: ${error.message}. Please search manually.`);
-      },
-      {
-        enableHighAccuracy: true,
-        timeout: 5000,
-        maximumAge: 0
-      }
-    );
-  };
-
-  return (
-    // This container centers the card vertically and horizontally
-    <div id="hospitals-page" className="h-full flex items-center justify-center p-4 sm:p-8">
-      <div 
-        className="bg-white/80 backdrop-blur-lg shadow-2xl rounded-2xl p-6 sm:p-8 border border-gray-200/50 transition-all duration-300 hover:shadow-cyan-100 max-w-2xl w-full opacity-0"
-        style={{ animation: 'fadeInUp 0.5s ease-out forwards' }}
-      >
-        <h2 className="text-2xl sm:text-3xl font-extrabold text-blue-800 mb-6 flex items-center">
-          <Icon name="hospital" size={30} className="mr-3 text-blue-500" />
-          Nearby Hospitals & Clinics
-        </h2>
-        <p className="text-gray-600 mb-6 text-sm sm:text-base">
-          Quickly find the nearest medical facilities. We will use your current location to launch a localized Google Maps search.
-        </p>
-
-        <div className="flex flex-col sm:flex-row items-center space-y-4 sm:space-y-0 sm:space-x-4">
-          <button
-            onClick={findHospitals}
-            disabled={status === 'loading'}
-            className="w-full sm:w-auto bg-green-500 hover:bg-green-600 text-white font-bold py-3 px-6 rounded-xl transition-all duration-300 disabled:opacity-50 flex items-center justify-center transform hover:scale-105"
-          >
-            {status === 'loading' ? (
-              <>
-                <svg className="animate-spin -ml-1 mr-3 h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
-                Finding Location...
-              </>
-            ) : (
-              <>
-                Find Hospitals Now <Icon name="chevronRight" size={20} className="ml-2" color="white" />
-              </>
-            )}
-          </button>
-          {status === 'found' && (
-            <p className="text-sm text-green-600">Redirected to Google Maps based on your location!</p>
-          )}
-          {status === 'error' && (
-            <p className="text-sm text-red-600">Error: Could not retrieve location data.</p>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-};
-
-/**
- * PAGE 3: DocBot Chat Page (Modified to fill viewport)
- */
-const DocBotPage = ({ db, userId, auth, authReady, appId }) => { // <-- Added appId prop
-  const CHAT_BOT_SYSTEM_INSTRUCTION = "You are a friendly, non-diagnostic AI assistant named DocBot. Your role is to answer general health questions, provide basic medical information, explain symptoms, and offer clear advice on when to see a doctor. Never provide a formal diagnosis, treatment, or specific medication advice. Keep responses encouraging and concise. Only provide one possible condition and safe general advice. Use Google Search grounding when necessary.";
-
-  const [chatHistory, setChatHistory] = useState([]);
-  const [currentMessage, setCurrentMessage] = useState('');
-  const [isTyping, setIsTyping] = useState(false);
-  const messagesEndRef = useRef(null);
-
-  const suggestedQuestions = [
-    "What are the symptoms of the flu?",
-    "How can I relieve a headache?",
-    "What is hypertension?",
-  ];
-
-  const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  };
-
-  useEffect(scrollToBottom, [chatHistory]);
-
-  // Firestore Listener
-  useEffect(() => {
-    // MODIFIED: Uses new appId prop and checks authReady
-    if (!authReady || !userId || !db || !appId) return;
-
-    try {
-      // MODIFIED: Uses appId prop to build path
-      const chatCollectionRef = collection(db, `artifacts/${appId}/users/${userId}/docbot_chat`);
-      const q = query(chatCollectionRef, orderBy('timestamp', 'asc'), limit(50));
-
-      const unsubscribe = onSnapshot(q, (snapshot) => {
-        const history = snapshot.docs.map(doc => ({...doc.data(), id: doc.id })); // Add id
-        setChatHistory(history);
-      }, (error) => {
-        console.error("Error fetching chat history from Firestore:", error);
-      });
-
-      return () => unsubscribe();
-    } catch (e) {
-      console.error("Firestore Chat Setup Failed:", e);
-    }
-  }, [db, userId, authReady, appId]); // <-- Added appId dependency
-
-  // Exponential Backoff Fetch Utility
-  const fetchWithBackoff = useCallback(async (url, options, retries = 3, delay = 1000) => {
-    for (let i = 0; i < retries; i++) {
-      try {
-        const response = await fetch(url, options);
-        if (response.ok) {
-          return response;
-        } else if (response.status === 429 && i < retries - 1) {
-          await new Promise(resolve => setTimeout(resolve, delay));
-          delay *= 2; // Exponential backoff
-          continue;
-        } else {
-          throw new Error(`API returned status ${response.status}`);
-        }
-      } catch (error) {
-        if (i === retries - 1) throw error;
-        await new Promise(resolve => setTimeout(resolve, delay));
-        delay *= 2;
-      }
-    }
-  }, []);
-
-  const handleSend = async (messageText) => {
-    const message = (typeof messageText === 'string') ? messageText : currentMessage;
-    // MODIFIED: Uses new appId prop
-    if (!message.trim() || isTyping || !db || !userId || !appId) return;
-
-    const userMessage = message.trim();
-    setCurrentMessage('');
-    
-    // MODIFIED: Uses appId prop to build path
-    const chatCollectionRef = collection(db, `artifacts/${appId}/users/${userId}/docbot_chat`);
-    
-    // 1. Save user message to Firestore
-    const userDocRef = doc(chatCollectionRef);
-    await setDoc(userDocRef, {
-      text: userMessage,
-      role: 'user',
-      timestamp: serverTimestamp(),
-      id: userDocRef.id
-    });
-
-    setIsTyping(true);
-
-    try {
-      const apiHistory = chatHistory.map(msg => ({
-        role: msg.role === 'ai' ? 'model' : 'user',
-        parts: [{ text: msg.text }]
-      }));
-      
-      apiHistory.push({ role: 'user', parts: [{ text: userMessage }] });
-
-
-      const payload = {
-        contents: apiHistory,
-        tools: [{ "google_search": {} }],
-        systemInstruction: {
-          parts: [{ text: CHAT_BOT_SYSTEM_INSTRUCTION }]
-        },
-      };
-
-      const response = await fetchWithBackoff(GEMINI_API_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      });
-
-      const result = await response.json();
-      const aiText = result.candidates?.[0]?.content?.parts?.[0]?.text || "Sorry, I couldn't process that request right now. Please try again later.";
-      
-      // 2. Save AI response to Firestore
-      const aiDocRef = doc(chatCollectionRef);
-      await setDoc(aiDocRef, {
-        text: aiText,
-        role: 'ai',
-        timestamp: serverTimestamp(),
-        id: aiDocRef.id
-      });
-      
-    } catch (error) {
-      console.error("Chatbot API failed:", error);
-       // Save error message to Firestore
-      const errorDocRef = doc(chatCollectionRef);
-      await setDoc(errorDocRef, {
-        text: "I ran into a technical error. Please try refreshing or checking your network connection.",
-        role: 'ai_error',
-        timestamp: serverTimestamp(),
-        id: errorDocRef.id
-      });
-    } finally {
-      setIsTyping(false);
-    }
-  };
-
-  const ChatBubble = ({ message }) => {
-    const isUser = message.role === 'user';
-    const isError = message.role === 'ai_error';
-    const bubbleClass = isUser
-      ? 'bg-blue-500 text-white self-end rounded-br-none'
-      : 'bg-gray-100 text-gray-800 self-start rounded-tl-none';
-    
-    const errorClass = isError 
-      ? 'bg-red-100 text-red-700 self-start border border-red-300'
-      : '';
-
-    return (
-      <div className={`max-w-xs sm:max-w-md p-3 rounded-xl shadow-md my-2 ${bubbleClass} ${errorClass}`}>
-        <p className="whitespace-pre-wrap">{message.text}</p>
-      </div>
-    );
-  };
-
-  return (
-    // This container fills the available height
-    <div id="chatbot-page" className="h-full p-4 sm:p-8 flex flex-col">
-      {/* This card grows to fill the height, creating the "still" page effect */}
-      <div 
-        className="bg-white/80 backdrop-blur-lg shadow-2xl rounded-2xl p-4 sm:p-8 border border-gray-200/50 flex flex-col flex-grow h-full transition-all duration-300 opacity-0"
-        style={{ animation: 'fadeInUp 0.5s ease-out forwards' }}
-      >
-        <h2 className="text-3xl font-extrabold text-blue-800 mb-6 flex items-center flex-shrink-0">
-          <Icon name="messageSquare" size={30} className="mr-3 text-green-500" />
-          DocBot - Your AI Health Assistant
-        </h2>
-
-        {/* Chat History Area - This now grows and scrolls internally */}
-        <div className="flex-grow overflow-y-auto p-4 mb-4 bg-gray-50/70 rounded-lg border border-gray-200 flex flex-col space-y-3">
-          {chatHistory.length === 0 && !isTyping ? (
-            <div 
-              className="text-center text-gray-500 m-auto opacity-0"
-              style={{ animation: 'fadeIn 0.5s 0.3s ease-out forwards' }}
-            >
-              <Icon name="stethoscope" size={40} className="mx-auto mb-2 text-blue-400" />
-              <p>Hello! I am DocBot. Ask me any general health questions.</p>
-              
-              {/* Suggested Questions */}
-              <div className="mt-6">
-                <h4 className="text-sm font-semibold text-gray-600 mb-3 flex items-center justify-center">
-                  <Icon name="lightbulb" size={16} className="mr-2 text-yellow-500" />
-                  Try asking...
-                </h4>
-                <div className="flex flex-col sm:flex-row gap-2 justify-center">
-                  {suggestedQuestions.map((q) => (
-                    <button
-                      key={q}
-                      onClick={() => handleSend(q)}
-                      className="px-4 py-2 bg-blue-50 text-blue-700 rounded-full text-sm font-medium transition-all duration-200 hover:bg-blue-100 hover:shadow-sm transform hover:scale-105"
-                    >
-                      "{q}"
-                    </button>
-                  ))}
-                </div>
-              </div>
-            </div>
-          ) : (
-            chatHistory.map((msg, index) => (
-              <ChatBubble key={msg.id || index} message={msg} />
-            ))
-          )}
-          {isTyping && (
-            <div className="max-w-xs p-3 rounded-xl shadow-md bg-gray-100 text-gray-800 self-start rounded-tl-none animate-pulse">
-              <span className="dot-flashing"></span>
-            </div>
-          )}
-          <div ref={messagesEndRef} />
-        </div>
-
-        {/* Input Area - This stays at the bottom */}
-        <div className="flex space-x-2 flex-shrink-0">
-          <input
-            type="text"
-            value={currentMessage}
-            onChange={(e) => setCurrentMessage(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && handleSend()}
-            className="flex-grow p-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition duration-150"
-            placeholder={!authReady ? "Loading connection..." : "Ask DocBot a health question..."}
-            disabled={isTyping || !authReady}
-          />
-          <button
-            onClick={() => handleSend()}
-            disabled={isTyping || !currentMessage.trim() || !authReady}
-            className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-4 rounded-xl transition-all duration-300 disabled:opacity-50 flex items-center justify-center transform hover:scale-105"
-          >
-            <Icon name="send" size={20} color="white" />
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-};
-
-
-/**
- * PAGE 4: Contact Page (Modified to center in viewport)
- */
-const ContactPage = () => {
-  const TEAM_CONTACTS = useMemo(() => [
-    { name: "Dilip Kumar A N", phone: "7259447817", email: "dilipkumaran.ec23@rvce.edu.in" },
-    { name: "Arya B V", phone: "8050141198", email: "aryabv.ec23@rvce.edu.in" },
-  ], []);
-
-  return (
-    // This container centers the card vertically and horizontally
-    <div id="contact-page" className="h-full flex p-4 sm:p-6"> {/* MODIFIED: Simplified container and padding */}
-      <div 
-        className="bg-white/80 backdrop-blur-lg shadow-2xl rounded-2xl p-6 border border-gray-200/50 transition-all duration-300 max-w-5xl w-full flex flex-col m-auto opacity-0" /* MODIFIED: m-auto, max-w-4xl to max-w-5xl, p-6 */
-        style={{ animation: 'fadeInUp 0.5s ease-out forwards' }}
-      >
-        <h2 className="text-3xl font-extrabold text-blue-800 mb-4 flex items-center flex-shrink-0"> {/* MODIFIED: mb-6 to mb-4 */ }
-          <Icon name="mail" size={30} className="mr-3 text-blue-500" />
-          Contact the Team
-        </h2>
-        <p className="text-gray-600 mb-6 flex-shrink-0"> {/* MODIFIED: mb-8 to mb-6 */ }
-          For technical support, legal inquiries, or other questions, please reach out to the relevant department.
-        </p>
-
-        {/* This grid is now horizontal on larger screens */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4"> {/* MODIFIED: Added lg:grid-cols-4 */}
-          {TEAM_CONTACTS.map((person) => (
-            <div 
-              key={person.name} 
-              className="bg-gray-50/80 border border-gray-200/50 p-4 rounded-xl shadow-md transition-all duration-300 hover:shadow-lg hover:scale-[1.03] hover:border-blue-300"
-            >
-              <p className="font-bold text-lg text-blue-800 mb-2">{person.name}</p> {/* MODIFIED: text-xl to text-lg, mb-3 to mb-2 */ }    
-              <div className="flex items-center text-sm text-gray-700 mb-1"> {/* MODIFIED: text-md to text-sm, mb-2 to mb-1 */ }
-                <Icon name="phone" size={14} className="mr-2 text-gray-500" />
-                <a href={`tel:${person.phone}`} className="hover:text-blue-600 transition">{person.phone}</a>
-              </div>
-              <div className="flex items-center text-sm text-gray-700"> {/* MODIFIED: text-md to text-sm */ }
-                <Icon name="mail" size={14} className="mr-2 text-gray-500" />
-                <a href={`mailto:${person.email}`} className="hover:text-blue-600 transition">{person.email}</a>
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
-    </div>
-  );
-};
-
-/**
- * PAGE 5: Prediction Page (HEAVILY RE-ARCHITECTED)
- * This page now uses flexbox to fill the viewport.
- * The symptom lists and history scroll INTERNALLY.
- * The main page only scrolls AFTER prediction.
- */
-const PredictionPage = ({ db, auth, userId, authReady, appId }) => { // <-- Added appId prop
-  // Prediction States
+const PredictionPage = ({ db, userId, authReady, appId }) => {
   const [selectedSymptoms, setSelectedSymptoms] = useState([]);
   const [age, setAge] = useState(30);
   const [gender, setGender] = useState('Male');
@@ -672,607 +520,427 @@ const PredictionPage = ({ db, auth, userId, authReady, appId }) => { // <-- Adde
   const [searchQuery, setSearchQuery] = useState('');
   const [history, setHistory] = useState([]);
 
-  // --- HISTORY LISTENER ---
   useEffect(() => {
-    // MODIFIED: Uses new appId prop and checks authReady
     if (!authReady || !userId || !db || !appId) return;
-
     try {
-      // MODIFIED: Uses appId prop to build path
       const historyCollectionRef = collection(db, `artifacts/${appId}/users/${userId}/symptom_history`);
       const q = query(historyCollectionRef, orderBy('timestamp', 'desc'), limit(5));
-
       const unsubscribe = onSnapshot(q, (snapshot) => {
         setHistory(snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id })));
-      }, (error) => {
-        console.error("Error fetching history:", error);
       });
-
       return () => unsubscribe();
-    } catch (e) {
-      console.error("Firestore History Listener Failed:", e);
-    }
-  }, [db, userId, authReady, appId]); // <-- Added appId dependency
+    } catch (e) { console.error(e); }
+  }, [db, userId, authReady, appId]);
 
-  // Exponential Backoff Fetch Utility
   const fetchWithBackoff = useCallback(async (url, options, retries = 3, delay = 1000) => {
     for (let i = 0; i < retries; i++) {
       try {
         const response = await fetch(url, options);
-        if (response.ok) {
-          return response;
-        } else if (response.status === 429 && i < retries - 1) {
-          await new Promise(resolve => setTimeout(resolve, delay));
-          delay *= 2; // Exponential backoff
-          continue;
-        } else {
-          throw new Error(`API returned status ${response.status}`);
-        }
+        if (response.ok) return response;
+        if (response.status === 429 && i < retries - 1) { await new Promise(res => setTimeout(res, delay)); delay *= 2; continue; }
+        throw new Error(`API status ${response.status}`);
       } catch (error) {
         if (i === retries - 1) throw error;
-        await new Promise(resolve => setTimeout(resolve, delay));
-        delay *= 2;
+        await new Promise(res => setTimeout(res, delay)); delay *= 2;
       }
     }
   }, []);
 
-  // --- PREDICTION LOGIC ---
   const handlePrediction = useCallback(async () => {
-    if (selectedSymptoms.length === 0) {
-      setPredictionResult(null);
-      return;
-    }
+    if (selectedSymptoms.length === 0) return;
+    setIsLoading(true); setPredictionResult(null);
+    setTimeout(() => document.getElementById('prediction-results')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 100);
 
-    setIsLoading(true);
-    setPredictionResult(null); // Clear previous results
-
-    // Scroll to results after a short delay to allow UI to update
-    setTimeout(() => {
-        const resultsEl = document.getElementById('prediction-results');
-        resultsEl?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    }, 100);
-
-    const userQuery = `The patient is a ${age} year old ${gender}. They are currently experiencing the following symptoms: ${selectedSymptoms.join(', ')}. Please act as a professional medical analyst and provide the top 3 most likely differential diagnoses, a confidence score (0.0 to 1.0) for each, and non-alarming, concise next steps/advice. Focus strictly on the JSON output format.`;
+    const userQuery = `The patient is a ${age} year old ${gender}. Symptoms: ${selectedSymptoms.join(', ')}. Act as a professional medical analyst. Provide top 3 differential diagnoses, confidence score (0.0 to 1.0), and concise next steps. Focus strictly on JSON output.`;
 
     try {
-      const payload = {
-        contents: [{ parts: [{ text: userQuery }] }],
-        generationConfig: {
-          responseMimeType: "application/json",
-          responseSchema: JSON_SCHEMA,
-        },
-      };
-
-      const response = await fetchWithBackoff(GEMINI_API_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
-
+      const payload = { contents: [{ parts: [{ text: userQuery }] }], generationConfig: { responseMimeType: "application/json", responseSchema: JSON_SCHEMA } };
+      const response = await fetchWithBackoff(GEMINI_API_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
       const result = await response.json();
-      const jsonString = result.candidates?.[0]?.content?.parts?.[0]?.text;
-      
-      if (!jsonString) {
-        throw new Error("Invalid response format from AI.");
-      }
-
-      const parsedResult = JSON.parse(jsonString);
+      const parsedResult = JSON.parse(result.candidates?.[0]?.content?.parts?.[0]?.text);
       setPredictionResult(parsedResult);
       
-      // Save query to Firestore if initialized
-      // MODIFIED: Uses new appId prop
       if (db && userId && appId) {
-        // MODIFIED: Uses appId prop to build path
         const historyCollectionRef = collection(db, `artifacts/${appId}/users/${userId}/symptom_history`);
-        await setDoc(doc(historyCollectionRef), {
-          symptoms: selectedSymptoms,
-          age: age,
-          gender: gender,
-          result: parsedResult,
-          timestamp: serverTimestamp(),
-        });
+        await setDoc(doc(historyCollectionRef), { symptoms: selectedSymptoms, age, gender, result: parsedResult, timestamp: serverTimestamp() });
       }
     } catch (error) {
-      console.error("Prediction failed:", error);
-      setPredictionResult({ error: `Could not retrieve AI prediction. ${error.message}` });
+      setPredictionResult({ error: `Could not retrieve prediction. Error: ${error.message}` });
     } finally {
       setIsLoading(false);
     }
-  }, [selectedSymptoms, age, gender, db, userId, appId, fetchWithBackoff]); // <-- Added appId dependency
+  }, [selectedSymptoms, age, gender, db, userId, appId, fetchWithBackoff]);
 
-  // --- Symptom Management ---
-  const toggleSymptom = (symptom) => {
-    setSelectedSymptoms(prev =>
-      prev.includes(symptom)
-        ? prev.filter(s => s !== symptom)
-        : [...prev, symptom]
-    );
-  };
-
-  const clearSymptoms = () => setSelectedSymptoms([]);
-
+  const toggleSymptom = (s) => setSelectedSymptoms(p => p.includes(s) ? p.filter(x => x !== s) : [...p, s]);
+  const isEmergency = predictionResult?.emergency_flag || selectedSymptoms.some(s => s.toLowerCase().includes('chest pain') || s.toLowerCase().includes('difficulty breathing'));
   const filteredSymptoms = useMemo(() => {
-    let symptoms = searchQuery 
-      ? SYMPTOM_CATEGORIES.flatMap(cat => ALL_SYMPTOMS_CATEGORIZED[cat])
-      : ALL_SYMPTOMS_CATEGORIZED[activeCategory] || [];
-
-    const lowerCaseQuery = searchQuery.toLowerCase();
-
-    return symptoms
-      .filter(s => s.toLowerCase().includes(lowerCaseQuery))
-      .sort((a, b) => a.localeCompare(b));
+    let symptoms = searchQuery ? SYMPTOM_CATEGORIES.flatMap(cat => ALL_SYMPTOMS_CATEGORIZED[cat]) : ALL_SYMPTOMS_CATEGORIZED[activeCategory] || [];
+    return symptoms.filter(s => s.toLowerCase().includes(searchQuery.toLowerCase())).sort((a, b) => a.localeCompare(b));
   }, [activeCategory, searchQuery]);
 
-  const isEmergency = predictionResult?.emergency_flag || selectedSymptoms.some(s => s.toLowerCase().includes('chest pain') || s.toLowerCase().includes('difficulty breathing'));
-
-  // --- UI Components ---
   return (
-    // This container fills the page and organizes content vertically
-    <div id="prediction-page" className="h-full flex flex-col p-4 sm:p-8">
-      
-      {/* SECTION 1: Header */}
-      <div 
-        className="flex-shrink-0 opacity-0"
-        style={{ animation: 'fadeIn 0.5s 0.1s ease-out forwards' }}
-      >
-        <h2 className="text-4xl font-extrabold text-blue-800 mb-2">Symptom Assessment</h2>
-        <p className="text-gray-500 mb-4">Select symptoms to get an initial, non-diagnostic AI assessment.</p>
+    <div className="p-4 sm:p-8 max-w-7xl mx-auto w-full animate-fadeInUp">
+      <div className="mb-6">
+        <h2 className="text-3xl font-extrabold text-gray-900">Symptom Assessment</h2>
+        <p className="text-gray-500">Select symptoms to get an initial, non-diagnostic AI triage.</p>
       </div>
 
-      {/* SECTION 2: Profile (Compact) */}
-      <div 
-        className="flex-shrink-0 p-4 bg-white/80 backdrop-blur-lg shadow-lg rounded-2xl border border-gray-200/50 mb-4 opacity-0"
-        style={{ animation: 'fadeInUp 0.5s 0.2s ease-out forwards' }}
-      >
+      <div className="bg-white/80 backdrop-blur-lg shadow-sm rounded-2xl border border-gray-200/50 p-6 mb-6">
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-          <label className="block">
-            <span className="text-sm font-medium text-gray-600">Age:</span>
-            <input
-              type="number"
-              value={age}
-              onChange={(e) => setAge(Math.max(1, parseInt(e.target.value) || 1))}
-              min="1"
-              className="mt-1 w-full p-2 border border-gray-300 rounded-xl focus:ring-blue-500 focus:border-blue-500"
-            />
-          </label>
-          <label className="block">
-            <span className="text-sm font-medium text-gray-600">Gender:</span>
-            <select
-              value={gender}
-              onChange={(e) => setGender(e.target.value)}
-              className="mt-1 w-full p-2 border border-gray-300 rounded-xl focus:ring-blue-500 focus:border-blue-500 bg-white"
-            >
-              <option value="Male">Male</option>
-              <option value="Female">Female</option>
-              <option value="Other">Other</option>
-            </select>
-          </label>
-          <label className="block sm:col-span-1">
-             <span className="text-sm font-medium text-gray-600">Search Symptoms:</span>
-            <input
-              type="text"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="e.g., pain, fever..."
-              className="mt-1 w-full p-2 border border-gray-300 rounded-xl focus:ring-blue-500 focus:border-blue-500"
-            />
-          </label>
+          <label className="block"><span className="text-sm font-bold text-gray-700">Age:</span><input type="number" value={age} onChange={e => setAge(Math.max(1, parseInt(e.target.value) || 1))} className="mt-1 w-full p-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none" /></label>
+          <label className="block"><span className="text-sm font-bold text-gray-700">Gender:</span><select value={gender} onChange={e => setGender(e.target.value)} className="mt-1 w-full p-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none"><option>Male</option><option>Female</option><option>Other</option></select></label>
+          <label className="block"><span className="text-sm font-bold text-gray-700">Search:</span><input type="text" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} placeholder="e.g., pain, fever..." className="mt-1 w-full p-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none" /></label>
         </div>
       </div>
 
-      {/* SECTION 3: Main Content (Grows and scrolls internally) */}
-      <div 
-        className="flex-grow flex flex-col lg:flex-row gap-4 opacity-0" // REMOVED min-h-[400px]
-        style={{ animation: 'fadeInUp 0.5s 0.3s ease-out forwards' }}
-      >
-        
-        {/* Left Column: Symptom Selection */}
-        <div className="lg:w-1/2 flex flex-col bg-white/80 backdrop-blur-lg shadow-lg rounded-2xl border border-gray-200/50 p-4">
-          <h3 className="text-xl font-semibold text-blue-800 mb-3 flex-shrink-0">Select Symptoms</h3>
-          
-          <div className="flex space-x-2 overflow-x-auto pb-2 border-b border-gray-200 flex-shrink-0">
+      <div className="flex flex-col lg:flex-row gap-6">
+        <div className="lg:w-1/2 flex flex-col bg-white/80 backdrop-blur-lg shadow-sm rounded-2xl border border-gray-200/50 p-5">
+          <div className="flex space-x-2 overflow-x-auto pb-3 mb-2 border-b border-gray-100 flex-shrink-0 hide-scrollbar">
             {SYMPTOM_CATEGORIES.map(cat => (
-              <button
-                key={cat}
-                onClick={() => { setActiveCategory(cat); setSearchQuery(''); }}
-                className={`px-4 py-2 rounded-full text-sm font-medium transition duration-150 whitespace-nowrap ${
-                  activeCategory === cat && !searchQuery
-                    ? 'bg-blue-600 text-white shadow-md'
-                    : 'bg-gray-100 text-gray-700 hover:bg-blue-100'
-                }`}
-              >
-                {cat}
-              </button>
+              <button key={cat} onClick={() => { setActiveCategory(cat); setSearchQuery(''); }} className={`px-4 py-2 rounded-full text-sm font-bold whitespace-nowrap transition-colors ${activeCategory === cat && !searchQuery ? 'bg-gray-900 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>{cat}</button>
             ))}
           </div>
-
-          {/* This grid is now the internally scrolling part */}
-          <div className="flex-grow overflow-y-auto pr-2 pt-3 grid grid-cols-2 md:grid-cols-3 gap-3">
-            {filteredSymptoms.length > 0 ? filteredSymptoms.map(symptom => {
-              const isSelected = selectedSymptoms.includes(symptom);
-              return (
-                <button
-                  key={symptom}
-                  onClick={() => toggleSymptom(symptom)}
-                  className={`p-3 text-sm h-fit rounded-xl text-left shadow-sm transform transition-all duration-200 ${
-                    isSelected
-                      ? 'bg-green-500 text-white font-semibold ring-2 ring-green-400 hover:scale-105'
-                      : 'bg-gray-50/80 text-gray-700 hover:bg-blue-50 border border-gray-200/50 hover:scale-105'
-                  }`}
-                >
-                  {symptom}
-                </button>
-              );
-            }) : (
-              <p className="text-gray-500 italic p-4 col-span-full text-center">No symptoms match your search.</p>
-            )}
+          <div className="flex-grow overflow-y-auto pr-2 grid grid-cols-2 gap-3 max-h-[350px] content-start">
+            {filteredSymptoms.map(symptom => (
+              <button key={symptom} onClick={() => toggleSymptom(symptom)} className={`p-3 text-sm h-fit rounded-xl text-left transition-all ${selectedSymptoms.includes(symptom) ? 'bg-blue-600 text-white font-bold shadow-md' : 'bg-gray-50 text-gray-700 font-medium hover:bg-gray-100 border border-gray-200/50'}`}>{symptom}</button>
+            ))}
           </div>
         </div>
 
-        {/* Right Column: Selected & History */}
-        <div className="lg:w-1/2 flex flex-col bg-white/80 backdrop-blur-lg shadow-lg rounded-2xl border border-gray-200/50 p-4">
-          {/* Selected Symptoms */}
-          <div className="flex-shrink-0">
-            <h3 className="text-xl font-semibold text-blue-800 mb-3">Selected ({selectedSymptoms.length})</h3>
-            <div className="flex flex-wrap gap-2 min-h-[6rem] max-h-[150px] overflow-y-auto border border-dashed border-gray-300 rounded-lg p-3">
-              {selectedSymptoms.length === 0 ? (
-                <p className="text-gray-400 italic m-auto">Start selecting symptoms from the left...</p>
-              ) : (
-                selectedSymptoms.map(symptom => (
-                  <div key={symptom} className="flex h-fit items-center bg-blue-100 text-blue-800 text-xs font-medium px-3 py-1 rounded-full shadow-sm transform transition-all duration-200 hover:scale-105">
-                    {symptom}
-                    <button onClick={() => toggleSymptom(symptom)} className="ml-2 text-blue-600 hover:text-red-500 transition">
-                      <Icon name="x" size={14} />
-                    </button>
-                  </div>
-                ))
-              )}
-            </div>
+        <div className="lg:w-1/2 flex flex-col bg-white/80 backdrop-blur-lg shadow-sm rounded-2xl border border-gray-200/50 p-5">
+          <h3 className="text-lg font-bold text-gray-900 mb-3">Selected ({selectedSymptoms.length})</h3>
+          <div className="flex-grow flex flex-wrap content-start gap-2 bg-gray-50 rounded-xl p-4 border border-dashed border-gray-300 overflow-y-auto min-h-[150px] max-h-[250px]">
+            {selectedSymptoms.length === 0 ? <p className="text-gray-400 italic m-auto text-sm">Start selecting symptoms...</p> : 
+              selectedSymptoms.map(symptom => (
+                <div key={symptom} className="flex h-fit items-center bg-blue-100 text-blue-800 text-xs font-bold px-3 py-1.5 rounded-full">
+                  {symptom} <button onClick={() => toggleSymptom(symptom)} className="ml-2 text-blue-600 hover:text-red-500"><Icon name="x" size={14} /></button>
+                </div>
+              ))
+            }
           </div>
-          
-          {/* Action Buttons */}
-          <div className="flex-shrink-0 flex justify-end space-x-3 mt-4">
-              <button
-                onClick={clearSymptoms}
-                disabled={selectedSymptoms.length === 0 || isLoading}
-                className="px-4 py-2 text-sm text-gray-600 bg-gray-200 hover:bg-gray-300 rounded-xl transition-all duration-150 disabled:opacity-50 transform hover:scale-105"
-              >
-                Clear All
-              </button>
-              <button
-                onClick={handlePrediction}
-                disabled={selectedSymptoms.length === 0 || isLoading || !authReady}
-                className="px-6 py-3 text-white font-bold bg-blue-600 hover:bg-blue-700 rounded-xl transition-all duration-150 shadow-md disabled:opacity-50 flex items-center justify-center transform hover:scale-105"
-              >
-                {isLoading ? (
-                  <>
-                    <svg className="animate-spin -ml-1 mr-3 h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
-                    Analyzing...
-                  </>
-                ) : (
-                  'Get AI Prediction'
-                )}
-              </button>
-            </div>
+          <div className="flex justify-end space-x-3 mt-4">
+            <button onClick={() => setSelectedSymptoms([])} disabled={selectedSymptoms.length===0} className="px-5 py-2.5 text-sm font-bold text-gray-600 bg-gray-200 rounded-xl disabled:opacity-50">Clear</button>
+            <button onClick={handlePrediction} disabled={selectedSymptoms.length===0 || isLoading || !authReady} className="px-6 py-2.5 text-white font-bold bg-blue-600 hover:bg-blue-700 rounded-xl shadow-md disabled:opacity-50 transition-colors">
+              {isLoading ? "Analyzing..." : "Get AI Triage"}
+            </button>
+          </div>
         </div>
       </div>
-      
-      {/* SECTION 4: Actions (Fixed at bottom of viewport content) -> THIS IS MOVED */}
-      {/* --- This section was moved up --- */}
 
-
-      {/* SECTION 5: Results (This part makes the page scrollable, as requested) */}
-      <div id="prediction-results" className="mt-6">
-        {/* Skeleton Loaders */}
-        {isLoading && (
-          <div className="space-y-4 w-full"> {/* MODIFIED: Removed max-w-2xl mx-auto */ }
-            <SkeletonCard />
-            <SkeletonCard />
-            <SkeletonCard />
-          </div>
-        )}
-        
-        {/* Emergency Warning */}
+      <div id="prediction-results" className="mt-8">
+        {isLoading && <div className="space-y-4"><SkeletonCard /><SkeletonCard /></div>}
         {isEmergency && !isLoading && (
-          <div className="bg-red-50 border border-red-200 p-4 rounded-xl mb-4 flex items-start text-red-800 w-full"> {/* MODIFIED: Removed max-w-2xl mx-auto */ }
-            <Icon name="alertTriangle" size={24} className="mt-1 flex-shrink-0" color="#ef4444" />
-            <div className="ml-3">
-              <h4 className="font-bold text-lg">EMERGENCY WARNING!</h4>
-              <p className="text-sm">Based on one or more selected symptoms, **seek professional medical help immediately.** This AI tool cannot provide life-saving assistance.</p>
+          <div className="bg-red-50 border border-red-200 p-5 rounded-2xl mb-6 flex items-start text-red-800 animate-fadeIn">
+            <Icon name="alertTriangle" size={28} className="mt-0.5 flex-shrink-0" color="#ef4444" />
+            <div className="ml-4">
+              <h4 className="font-extrabold text-lg">EMERGENCY WARNING</h4>
+              <p className="text-sm mt-1">Based on symptoms, <strong>seek professional medical help immediately.</strong></p>
             </div>
           </div>
         )}
-        
-        {/* Results */}
         {predictionResult && !isLoading && !predictionResult.error && (
-          <div className="space-y-4 w-full"> {/* MODIFIED: Removed max-w-2xl mx-auto */ }
-             <h3 className="text-2xl font-bold text-blue-800 mb-4">AI Assessment</h3>
+          <div className="space-y-4 animate-fadeInUp">
+             <h3 className="text-2xl font-extrabold text-gray-900 mb-2 border-b border-gray-200 pb-3">AI Diagnostic Report</h3>
+             <p className="text-xs text-amber-600 font-bold mb-4 bg-amber-50 p-2 rounded-lg border border-amber-200 inline-block">
+               <Icon name="alertTriangle" size={12} className="inline mr-1" /> Educational information only. Consult qualified healthcare professionals for medical advice.
+             </p>
             {predictionResult.predictions.map((p, index) => {
               const confidencePercent = Math.round(p.confidence * 100);
-              let barColor = 'bg-red-400';
-              if (confidencePercent > 70) barColor = 'bg-green-500';
-              else if (confidencePercent > 40) barColor = 'bg-yellow-500';
-
+              const barColor = confidencePercent > 70 ? 'bg-emerald-500' : confidencePercent > 40 ? 'bg-amber-500' : 'bg-rose-500';
               return (
-                <div key={index} className="p-4 rounded-xl border shadow-sm" style={{borderColor: '#bbf7d0', backgroundColor: '#f0fdf4'}}>
-                  <div className="flex justify-between items-center mb-2">
-                    <h4 className="font-bold text-lg text-green-700">{p.disease}</h4>
-                    <span className="text-sm font-semibold text-gray-700">
-                      {confidencePercent}%
-                    </span>
+                <div key={index} className="p-6 rounded-2xl border border-gray-100 bg-white shadow-sm">
+                  <div className="flex justify-between items-center mb-3">
+                    <h4 className="font-extrabold text-xl text-gray-900">{p.disease}</h4>
+                    <span className={`text-sm font-extrabold px-3 py-1 rounded-lg ${confidencePercent > 70 ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>{confidencePercent}%</span>
                   </div>
-                  
-                  {/* Confidence Bar */}
-                  <div className="w-full bg-gray-200 rounded-full h-2.5 mb-3">
-                    <div
-                      className={`h-2.5 rounded-full ${barColor} transition-all duration-500`}
-                      style={{ width: `${confidencePercent}%` }}
-                    ></div>
-                  </div>
-
-                  <p className="text-sm text-gray-700">{p.description}</p>
+                  <div className="w-full bg-gray-100 rounded-full h-2 mb-4 overflow-hidden"><div className={`h-2 rounded-full ${barColor} transition-all duration-1000`} style={{ width: `${confidencePercent}%` }}></div></div>
+                  <p className="text-sm text-gray-600 leading-relaxed">{p.description}</p>
                 </div>
               );
             })}
           </div>
         )}
-        
-        {/* Error Message */}
         {predictionResult?.error && !isLoading && (
-          <div className="p-4 bg-red-100 border border-red-400 rounded-xl text-red-800 w-full"> {/* MODIFIED: Removed max-w-2xl mx-auto */ }
-            <p className="font-semibold">Error:</p>
-            <p className="text-sm">{predictionResult.error}</p>
-          </div>
-        )}
-      </div>
-
-      {/* SECTION 6: Recent History (NEWLY MOVED HERE) */}
-      <div 
-        className="flex-shrink-0 p-4 bg-white/80 backdrop-blur-lg shadow-lg rounded-2xl border border-gray-200/50 mt-6 w-full opacity-0" /* MODIFIED: Removed max-w-2xl mx-auto */
-        style={{ animation: 'fadeInUp 0.5s 0.5s ease-out forwards' }}
-      >
-        <h3 className="text-xl font-semibold text-blue-800 mb-4 flex items-center">
-          <Icon name="history" size={20} className="mr-2 text-blue-500" />
-          Recent History
-        </h3>
-        {authReady ? (
-          <>
-            <p className="text-gray-500 text-xs mb-3">Last 5 checks (User ID: {userId ? `${userId.substring(0, 8)}...` : 'N/A'}):</p>
-            <div className="space-y-3 max-h-[200px] overflow-y-auto pr-2">
-              {history.length === 0 ? (
-                <p className="text-gray-400 italic text-sm">No recent checks found.</p>
-              ) : (
-                history.map(item => (
-                  <div key={item.id} className="p-3 bg-gray-50/80 rounded-lg border border-gray-200 shadow-sm transition duration-200 hover:shadow-md">
-                    <p className="text-xs font-semibold text-gray-800">{new Date(item.timestamp?.seconds * 1000).toLocaleString()}</p>
-                    <p className="text-sm text-gray-600 mt-1 truncate">
-                      Symptoms: {item.symptoms.join(', ')}
-                    </p>
-                    <p className="text-xs font-medium text-green-600 mt-1">
-                      Top Prediction: {item.result.predictions[0]?.disease || 'N/A'}
-                    </p>
-                  </div>
-                ))
-              )}
-            </div>
-          </>
-        ) : (
-          <div className="text-center p-4 text-gray-500">
-            <p>Authenticating Firebase...</p>
-          </div>
+          <div className="p-5 bg-rose-50 border border-rose-200 rounded-2xl text-rose-800 font-mono text-sm">{predictionResult.error}</div>
         )}
       </div>
     </div>
   );
 };
 
+const DocBotPage = ({ db, userId, authReady, appId }) => {
+  const CHAT_BOT_SYSTEM_INSTRUCTION = "You are DocBot, an AI health assistant. Answer health questions concisely. Do not diagnose. Include this exact text at the end of every medical response: 'Educational information only. Consult qualified healthcare professionals for medical advice.' Use search grounding.";
+  const [chatHistory, setChatHistory] = useState([]);
+  const [currentMessage, setCurrentMessage] = useState('');
+  const [isTyping, setIsTyping] = useState(false);
+  const messagesEndRef = useRef(null);
+
+  useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [chatHistory]);
+
+  useEffect(() => {
+    if (!authReady || !userId || !db || !appId) return;
+    try {
+      const q = query(collection(db, `artifacts/${appId}/users/${userId}/docbot_chat`), orderBy('timestamp', 'asc'), limit(50));
+      return onSnapshot(q, (snapshot) => setChatHistory(snapshot.docs.map(doc => ({...doc.data(), id: doc.id }))));
+    } catch (e) { console.error(e); }
+  }, [db, userId, authReady, appId]);
+
+  const handleSend = async (messageText) => {
+    const message = (typeof messageText === 'string') ? messageText : currentMessage;
+    if (!message.trim() || isTyping || !db || !userId || !appId) return;
+    const userMessage = message.trim(); setCurrentMessage('');
+    const colRef = collection(db, `artifacts/${appId}/users/${userId}/docbot_chat`);
+    
+    await setDoc(doc(colRef), { text: userMessage, role: 'user', timestamp: serverTimestamp() });
+    setIsTyping(true);
+
+    try {
+      const apiHistory = chatHistory.map(msg => ({ role: msg.role === 'ai' ? 'model' : 'user', parts: [{ text: msg.text }] }));
+      apiHistory.push({ role: 'user', parts: [{ text: userMessage }] });
+      const payload = { contents: apiHistory, tools: [{ "google_search": {} }], systemInstruction: { parts: [{ text: CHAT_BOT_SYSTEM_INSTRUCTION }] } };
+      
+      const res = await fetch(GEMINI_API_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+      const result = await res.json();
+      const aiText = result.candidates?.[0]?.content?.parts?.[0]?.text || "Sorry, error processing.";
+      await setDoc(doc(colRef), { text: aiText, role: 'ai', timestamp: serverTimestamp() });
+    } catch (error) {
+      await setDoc(doc(colRef), { text: "Network Error. Check API key.", role: 'ai_error', timestamp: serverTimestamp() });
+    } finally { setIsTyping(false); }
+  };
+
+  return (
+    <div className="h-full p-4 md:p-8 max-w-4xl mx-auto w-full flex flex-col animate-fadeInUp">
+      <div className="bg-white/90 backdrop-blur-xl shadow-sm rounded-3xl border border-gray-200/50 flex flex-col flex-grow overflow-hidden">
+        <div className="px-6 py-4 border-b border-gray-100 bg-gray-50 flex items-center">
+          <Icon name="messageSquare" className="text-blue-600 mr-3" size={24} />
+          <div>
+            <h2 className="text-lg font-bold text-gray-900">DocBot Assistant</h2>
+            <p className="text-xs font-semibold text-emerald-500">Online</p>
+          </div>
+        </div>
+        <div className="flex-grow overflow-y-auto p-4 md:p-6 bg-gray-50/30 flex flex-col space-y-4">
+          {chatHistory.length === 0 && !isTyping ? (
+            <div className="m-auto text-center max-w-sm">
+              <Icon name="stethoscope" size={40} className="text-blue-400 mx-auto mb-4" />
+              <p className="text-gray-500 mb-6">Ask me any general health questions.</p>
+              <div className="space-y-2">
+                {["What are flu symptoms?", "How to reduce stress?"].map(q => (
+                  <button key={q} onClick={() => handleSend(q)} className="block w-full p-3 bg-white border border-gray-200 rounded-xl text-sm font-semibold text-gray-700 hover:text-blue-600 shadow-sm text-left">"{q}"</button>
+                ))}
+              </div>
+            </div>
+          ) : (
+            chatHistory.map((msg, idx) => (
+              <div key={idx} className={`max-w-[85%] sm:max-w-md p-4 rounded-2xl shadow-sm ${msg.role === 'user' ? 'bg-blue-600 text-white self-end rounded-br-sm' : 'bg-white border border-gray-100 text-gray-800 self-start rounded-tl-sm'}`}>
+                <p className="whitespace-pre-wrap text-sm leading-relaxed">{msg.text}</p>
+              </div>
+            ))
+          )}
+          {isTyping && <div className="self-start bg-white border border-gray-100 p-4 rounded-2xl rounded-tl-sm shadow-sm"><span className="dot-flashing"></span></div>}
+          <div ref={messagesEndRef} />
+        </div>
+        <div className="p-4 bg-white border-t border-gray-100 flex-shrink-0">
+          <div className="relative flex items-center">
+            <input type="text" value={currentMessage} onChange={e => setCurrentMessage(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleSend()} disabled={isTyping || !authReady} placeholder="Type a health question..." className="w-full pl-5 pr-14 py-4 bg-gray-50 border border-gray-200 rounded-2xl focus:ring-2 focus:ring-blue-500 outline-none text-sm" />
+            <button onClick={() => handleSend()} disabled={isTyping || !currentMessage.trim() || !authReady} className="absolute right-2 p-2.5 bg-blue-600 text-white rounded-xl hover:bg-blue-700 disabled:opacity-50 shadow-sm"><Icon name="send" size={18} /></button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const HospitalPage = () => {
+  return (
+    <div className="p-6 max-w-3xl mx-auto w-full animate-fadeInUp flex items-center justify-center h-full">
+      <div className="bg-white/90 backdrop-blur-xl shadow-sm rounded-3xl p-8 border border-gray-200/50 text-center w-full">
+        <Icon name="hospital" size={48} className="text-blue-500 mx-auto mb-4" />
+        <h2 className="text-2xl font-extrabold text-gray-900 mb-2">Find Medical Care</h2>
+        <p className="text-gray-500 mb-8 max-w-sm mx-auto">Locate the nearest emergency rooms and hospitals using your device's location.</p>
+        <button
+          onClick={() => {
+            if(navigator.geolocation) {
+              navigator.geolocation.getCurrentPosition(pos => {
+                window.open(`https://www.google.com/maps/search/Hospitals/@${pos.coords.latitude},${pos.coords.longitude},14z`, '_blank');
+              });
+            } else { alert("Location not supported"); }
+          }}
+          className="px-8 py-3.5 bg-gray-900 hover:bg-black text-white font-bold rounded-xl shadow-md transition-colors"
+        >
+          Open Google Maps
+        </button>
+      </div>
+    </div>
+  );
+};
+
+const ContactPage = () => {
+  return (
+    <div className="p-6 max-w-3xl mx-auto w-full animate-fadeInUp flex items-center justify-center h-full">
+      <div className="bg-white/90 backdrop-blur-xl shadow-sm rounded-3xl p-8 border border-gray-200/50 text-center w-full">
+        <Icon name="mail" size={48} className="text-blue-500 mx-auto mb-4" />
+        <h2 className="text-2xl font-extrabold text-gray-900 mb-2">Contact Support</h2>
+        <p className="text-gray-500 mb-8">Need technical help or have a question about the platform?</p>
+        <div className="space-y-4 max-w-xs mx-auto text-left">
+          <div className="p-4 bg-gray-50 rounded-xl border border-gray-100">
+            <p className="font-bold text-gray-900">Dilip Kumar A N</p>
+            <p className="text-sm text-gray-600">dilipkumaran.ec23@rvce.edu.in</p>
+          </div>
+          <div className="p-4 bg-gray-50 rounded-xl border border-gray-100">
+            <p className="font-bold text-gray-900">Arya B V</p>
+            <p className="text-sm text-gray-600">aryabv.ec23@rvce.edu.in</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
 
 // =================================================================================
-// --- MAIN APP COMPONENT (CONTROLS PAGES & FIREBASE) ---
+// --- MAIN APP COMPONENT (CONTROLS AUTH & ROUTING) ---
 // =================================================================================
 
 const App = () => {
-  // Firebase States
-  const [db, setDb] = useState(null);
-  const [auth, setAuth] = useState(null);
   const [userId, setUserId] = useState(null);
+  const [userRole, setUserRole] = useState(null); // 'patient', 'doctor', 'attender', 'admin'
   const [authReady, setAuthReady] = useState(false);
-  const [appId, setAppId] = useState(null); // <-- NEW: State for appId
+  const [currentPage, setCurrentPage] = useState('home');
+  const [initError, setInitError] = useState(null);
 
-  // Page Navigation State
-  const [currentPage, setCurrentPage] = useState('home'); // default page
-
-  // --- FIREBASE INITIALIZATION AND AUTH ---
   useEffect(() => {
     let isMounted = true;
     
-    try {
-      // --- MODIFICATION FOR VERCEL ---
-      // 1. Read the config from Vercel's Environment Variables
-      const env = (typeof import.meta !== 'undefined' && import.meta.env) ? import.meta.env : {};
-      const firebaseConfigStr = env.VITE_FIREBASE_CONFIG || '{}';
-      
-      // 2. We are on a public website, so we MUST sign in anonymously.
-      const initialAuthToken = null; 
-      // --- END OF MODIFICATION ---
-
-      // Basic check for valid config
-      if (firebaseConfigStr === '{}') {
-          console.error("Firebase config is missing or empty! Make sure VITE_FIREBASE_CONFIG is set in Vercel.");
-          return; // This will cause the app to hang on "Authenticating..."
-      }
-      
-      const firebaseConfig = JSON.parse(firebaseConfigStr);
-
-      if (!firebaseConfig.apiKey) {
-        console.error("Firebase config is missing apiKey! Check your VITE_FIREBASE_CONFIG.");
-        return; // This will also cause the app to hang.
-      }
-      
-      // --- CRITICAL FIX: Get appId from the config object ---
-      const newAppId = firebaseConfig.appId; 
-      if (!newAppId) {
-        console.error("Your firebaseConfig is missing the 'appId'!");
-        return;
-      }
-      // --- END CRITICAL FIX ---
-
-
-      const app = initializeApp(firebaseConfig);
-      const firestore = getFirestore(app);
-      setLogLevel('debug'); // As requested
-      const firebaseAuth = getAuth(app);
-      
+    if (!auth || !db) {
       if (isMounted) {
-        setDb(firestore);
-        setAuth(firebaseAuth);
-        setAppId(newAppId); // <-- NEW: Set appId state
-      }
-
-      const attemptAuth = async () => {
-        try {
-          if (initialAuthToken) {
-            // Removed signInWithCustomToken as it's not used in Vercel deployment setup
-            // await signInWithCustomToken(firebaseAuth, initialAuthToken);
-          } else {
-            await signInAnonymously(firebaseAuth);
-          }
-        } catch (e) {
-          console.error("Auth failed, attempting anonymous sign-in fallback:", e);
-          try {
-            await signInAnonymously(firebaseAuth);
-          } catch (eAnon) {
-            console.error("Anonymous sign-in fallback failed:", eAnon);
-          }
-        }
-      };
-      
-      attemptAuth();
-      
-      onAuthStateChanged(firebaseAuth, (user) => {
-        if (!isMounted) return;
-        
-        if (user) {
-          console.log("Firebase Authentication SUCCESS. User ID:", user.uid);
-          setUserId(user.uid);
-        } else {
-          console.warn("Firebase Authentication FAILED. User is not signed in.");
-          setUserId(null);
-        }
-        // This is the line that removes the "Authenticating..." message.
+        setInitError("Firebase configuration is missing or invalid. Check your environment variables.");
         setAuthReady(true);
-      });
-      
-    } catch (e) {
-      console.error("Firebase Initialization Failed (Overall Catch):", e);
-      if (isMounted) setAuthReady(true); // Continue with app functionality if Firebase fails
+      }
+      return;
     }
+
+    const attemptAuth = async () => {
+      try {
+        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+          await signInWithCustomToken(auth, __initial_auth_token);
+        }
+      } catch (e) {
+        console.error("Custom token auth failed:", e);
+      }
+    };
+    attemptAuth();
+
+    const unsubscribe = onAuthStateChanged(auth, async (user) => {
+      if (!isMounted) return;
+      
+      if (user) {
+        setUserId(user.uid);
+        try {
+          const profileRef = doc(db, 'artifacts', globalAppId, 'users', user.uid, 'profile', 'data');
+          const profileSnap = await getDoc(profileRef);
+          
+          if (profileSnap.exists()) {
+            const data = profileSnap.data();
+            setUserRole(data.role || 'patient');
+            
+            // Set correct starting page based on role
+            if(data.role === 'doctor') setCurrentPage('doctor-home');
+            else if(data.role === 'attender') setCurrentPage('attender-home');
+            else if(data.role === 'admin') setCurrentPage('admin-home');
+            else setCurrentPage('home');
+            
+          } else {
+            setUserRole('patient');
+            setCurrentPage('home');
+          }
+        } catch (err) {
+          console.error("Failed to fetch role:", err);
+          setUserRole('patient');
+          setCurrentPage('home');
+        }
+      } else {
+        setUserId(null);
+        setUserRole(null);
+        setCurrentPage('home');
+      }
+      setAuthReady(true);
+    });
     
-    return () => { isMounted = false; };
+    return () => { isMounted = false; unsubscribe(); };
   }, []);
 
-  // Page Rendering Logic
-  const renderPage = () => {
-    // This is where the animation class is applied
-    const pageContainerClasses = "h-full w-full"; // Page components handle their own animation now
+  const renderContent = () => {
+    if (initError) {
+      return (
+        <div className="h-full flex items-center justify-center p-8">
+          <div className="bg-red-50 border border-red-200 p-6 rounded-2xl max-w-lg w-full text-center">
+             <Icon name="alertTriangle" size={48} className="text-red-500 mx-auto mb-4" />
+             <h3 className="text-lg font-bold text-red-900 mb-2">Initialization Error</h3>
+             <p className="text-sm text-red-700">{initError}</p>
+          </div>
+        </div>
+      );
+    }
+
+    if (!authReady) {
+      return (
+        <div className="h-full flex flex-col items-center justify-center">
+          <span className="dot-flashing mb-4"></span>
+          <p className="text-gray-500 text-sm font-medium">Initializing Platform...</p>
+        </div>
+      );
+    }
+
+    if (!userId) {
+      return <AuthScreen auth={auth} db={db} appId={globalAppId} />;
+    }
+
+    const pageContainerClasses = "flex-grow w-full overflow-y-auto pt-16 relative z-10";
 
     switch (currentPage) {
-      case 'home':
-        return <div className={pageContainerClasses}><HomePage onNavigate={setCurrentPage} /></div>;
-      case 'prediction':
-        // PredictionPage is the only one that scrolls
-        // MODIFIED: Pass appId prop
-        return <div className={pageContainerClasses + " overflow-y-auto"}><PredictionPage db={db} auth={auth} userId={userId} authReady={authReady} appId={appId} /></div>;
-      case 'docbot':
-        // MODIFIED: Pass appId prop
-        return <div className={pageContainerClasses}><DocBotPage db={db} auth={auth} userId={userId} authReady={authReady} appId={appId} /></div>;
-      case 'hospitals':
-        return <div className={pageContainerClasses}><HospitalPage /></div>;
-      case 'contact':
-        return <div className={pageContainerClasses}><ContactPage /></div>;
-      default:
-        return <div className={pageContainerClasses}><HomePage onNavigate={setCurrentPage} /></div>;
+      case 'home': return <div className={pageContainerClasses}><HomePage onNavigate={setCurrentPage} /></div>;
+      case 'prediction': return <div className={pageContainerClasses}><PredictionPage db={db} userId={userId} authReady={authReady} appId={globalAppId} /></div>;
+      case 'docbot': return <div className={pageContainerClasses}><DocBotPage db={db} userId={userId} authReady={authReady} appId={globalAppId} /></div>;
+      case 'hospitals': return <div className={pageContainerClasses}><HospitalPage /></div>;
+      case 'contact': return <div className={pageContainerClasses}><ContactPage /></div>;
+      
+      case 'doctor-home': return <div className={pageContainerClasses}><DoctorDashboard /></div>;
+      case 'attender-home': return <div className={pageContainerClasses}><AttenderDashboard /></div>;
+      case 'admin-home': return <div className={pageContainerClasses}><AdminDashboard /></div>;
+      
+      default: return <div className={pageContainerClasses}><HomePage onNavigate={setCurrentPage} /></div>;
     }
   };
 
   return (
-    <div className="h-screen w-screen flex flex-col bg-gradient-to-br from-white to-blue-50 font-inter overflow-hidden">
-      {/* Global Styles & Animations */}
+    <div className="h-screen w-screen flex flex-col bg-gradient-to-br from-gray-50 to-blue-50/30 font-inter overflow-hidden">
       <style>{`
-        /* Page Fade-in */
-        @keyframes pageFadeIn {
-          from { opacity: 0; }
-          to { opacity: 1; }
-        }
-        
-        /* Element Fade-in-Up */
-        @keyframes fadeInUp {
-          from { opacity: 0; transform: translateY(20px); }
-          to { transform: translateY(0); opacity: 1; }
-        }
-        
-        /* Element Fade-in */
-        @keyframes fadeIn {
-          from { opacity: 0; }
-          to { opacity: 1; }
-        }
-
-        /* Typing dots for chatbot */
-        .dot-flashing {
-          position: relative;
-          width: 5px;
-          height: 5px;
-          border-radius: 5px;
-          background-color: #3b82f6;
-          color: #3b82f6;
-          animation: dotFlashing 1s infinite linear alternate;
-          animation-delay: 0s;
-          display: inline-block;
-        }
-        .dot-flashing::before, .dot-flashing::after {
-          content: "";
-          display: inline-block;
-          position: absolute;
-          top: 0;
-        }
-        .dot-flashing::before {
-          left: -8px;
-          width: 5px;
-          height: 5px;
-          border-radius: 5px;
-          background-color: #3b82f6;
-          color: #3b82f6;
-          animation: dotFlashing 1s infinite alternate;
-          animation-delay: 0.4s;
-        }
-        .dot-flashing::after {
-          left: 8px;
-          width: 5px;
-          height: 5px;
-          border-radius: 5px;
-          background-color: #3b82f6;
-          color: #3b82f6;
-          animation: dotFlashing 1s infinite alternate;
-          animation-delay: 0.8s;
-        }
-        @keyframes dotFlashing {
-          0% { opacity: 0.2; }
-          50% { opacity: 1; }
-          100% { opacity: 0.2; }
-        }
+        body { font-family: 'Inter', sans-serif; }
+        .hide-scrollbar::-webkit-scrollbar { display: none; }
+        .hide-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+        @keyframes fadeInUp { from { opacity: 0; transform: translateY(15px); } to { opacity: 1; transform: translateY(0); } }
+        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+        .animate-fadeInUp { animation: fadeInUp 0.5s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
+        .animate-fadeIn { animation: fadeIn 0.4s ease-out forwards; }
+        .dot-flashing { position: relative; width: 5px; height: 5px; border-radius: 5px; background-color: #3b82f6; color: #3b82f6; animation: dotFlashing 1s infinite linear alternate; animation-delay: 0s; display: inline-block; }
+        .dot-flashing::before, .dot-flashing::after { content: ""; display: inline-block; position: absolute; top: 0; }
+        .dot-flashing::before { left: -8px; width: 5px; height: 5px; border-radius: 5px; background-color: #3b82f6; color: #3b82f6; animation: dotFlashing 1s infinite alternate; animation-delay: 0.4s; }
+        .dot-flashing::after { left: 8px; width: 5px; height: 5px; border-radius: 5px; background-color: #3b82f6; color: #3b82f6; animation: dotFlashing 1s infinite alternate; animation-delay: 0.8s; }
+        @keyframes dotFlashing { 0% { opacity: 0.2; } 50% { opacity: 1; } 100% { opacity: 0.2; } }
       `}</style>
       
-      <NavBar currentPage={currentPage} onNavigate={setCurrentPage} />
+      {userId && (
+        <NavBar 
+          currentPage={currentPage} 
+          onNavigate={setCurrentPage} 
+          userRole={userRole}
+          auth={auth} 
+        />
+      )}
       
-      {/* Main content area is hidden overflow. Scrolling is handled *inside* renderPage */}
-      <main className="flex-grow pt-16 overflow-hidden">
-        {renderPage()}
-      </main>
-      
-      <Footer className="flex-shrink-0 z-10" />
+      {renderContent()}
+      <Footer className="flex-shrink-0 z-20 bg-white" />
     </div>
   );
 };
-
 
 export default App;
