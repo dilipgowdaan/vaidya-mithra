@@ -6,7 +6,8 @@ import {
   signInWithEmailAndPassword, 
   signOut, 
   onAuthStateChanged,
-  updateProfile
+  updateProfile,
+  updatePassword
 } from 'firebase/auth';
 import { 
   getFirestore, 
@@ -14,8 +15,8 @@ import {
   doc, 
   setDoc, 
   getDoc,
-  deleteDoc,
   updateDoc,
+  deleteDoc,
   query, 
   orderBy, 
   limit, 
@@ -24,32 +25,17 @@ import {
   setLogLevel 
 } from 'firebase/firestore';
 
-const getEnvVar = (key) => {
-  try { return import.meta.env[key]; } catch(e) { return undefined; }
-};
-
-const apiKey = getEnvVar('VITE_VAIDYA_MITHRA_GEMINI_KEY') || "";
+// =================================================================================
+// --- GLOBAL ENVIRONMENT & API CONFIGURATION ---
+// =================================================================================
+const env = (typeof import.meta !== 'undefined' && import.meta.env) ? import.meta.env : {};
+const apiKey = env.VITE_VAIDYA_MITHRA_GEMINI_KEY || "";
 const GEMINI_API_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
-
-// Global Firebase Setup (Ensures it only initializes once)
-let app, auth, db, globalAppId;
-try {
-  const fbConfigStr = typeof __firebase_config !== 'undefined' ? __firebase_config : getEnvVar('VITE_FIREBASE_CONFIG');
-  if (fbConfigStr && fbConfigStr !== '{}') {
-    const config = JSON.parse(fbConfigStr);
-    app = initializeApp(config);
-    auth = getAuth(app);
-    db = getFirestore(app);
-    globalAppId = typeof __app_id !== 'undefined' ? __app_id : (config.appId || 'default-app-id');
-  }
-} catch (e) {
-  console.error("Firebase Global Initialization Error:", e);
-}
 
 const JSON_SCHEMA = {
   type: "OBJECT",
   properties: {
-    emergency_flag: { type: "BOOLEAN", description: "True if symptoms indicate severe emergency." },
+    emergency_flag: { type: "BOOLEAN", description: "True if symptoms indicate severe emergency. False otherwise." },
     predictions: {
       type: "ARRAY",
       items: {
@@ -73,9 +59,11 @@ const ALL_SYMPTOMS_CATEGORIZED = {
   Skin: ['Rash', 'Itching', 'Hives', 'Dry Skin', 'Jaundice', 'Bruising', 'Change in Mole appearance', 'Redness/Inflammation'],
   Musculoskeletal: ['Joint Pain', 'Muscle Pain', 'Back Pain', 'Stiffness', 'Swollen Joints', 'Limited Range of Motion', 'Numbness/Tingling'],
 };
-
 const SYMPTOM_CATEGORIES = Object.keys(ALL_SYMPTOMS_CATEGORIZED);
 
+// =================================================================================
+// --- ICONS & BRANDING ---
+// =================================================================================
 const Icon = ({ name, size = 20, color = 'currentColor', className = '' }) => {
   const icons = {
     home: <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>,
@@ -89,7 +77,7 @@ const Icon = ({ name, size = 20, color = 'currentColor', className = '' }) => {
     fileText: <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>,
     activity: <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>,
     shield: <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>,
-    settings: <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>,
+    settings: <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>,
     bell: <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>,
     logOut: <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>,
     mail: <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>,
@@ -106,12 +94,12 @@ const Icon = ({ name, size = 20, color = 'currentColor', className = '' }) => {
   return icons[name] || <div style={{ width: size, height: size }}>?</div>;
 };
 
-const Logo = () => (
-  <div className="flex items-center flex-shrink-0">
-    <div className="p-1 bg-blue-600 rounded-lg shadow-md">
+const Logo = ({ className = "" }) => (
+  <div className={`flex items-center flex-shrink-0 ${className}`}>
+    <div className="p-1.5 bg-gradient-to-br from-blue-600 to-indigo-600 rounded-xl shadow-md">
       <Icon name="stethoscope" size={24} color="white" />
     </div>
-    <span className="text-2xl font-bold text-blue-800 ml-3 tracking-tight">
+    <span className="text-2xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-blue-900 to-indigo-800 ml-3 tracking-tight">
       Vaidya<span className="text-blue-600 font-extrabold">Mithra</span>
     </span>
   </div>
@@ -130,21 +118,16 @@ const SkeletonCard = () => (
   </div>
 );
 
-const Footer = () => (
-  <div id="footer" className="bg-white/70 backdrop-blur-sm border-t border-gray-200 py-4 px-4 sm:px-8">
-    <p className="text-xs text-gray-600 text-center max-w-4xl mx-auto mb-2">
-      <strong>Disclaimer:</strong> This application is for informational and educational purposes only and is <strong>NOT</strong> a substitute for professional medical advice, diagnosis, or treatment.
-    </p>
-    <p className="text-xs text-gray-500 text-center">&copy; {new Date().getFullYear()} Vaidya Mithra. All rights reserved.</p>
-  </div>
-);
+// =================================================================================
+// --- AUTHENTICATION SCREEN ---
+// =================================================================================
 
 const AuthScreen = ({ auth, db, appId }) => {
   const [isLogin, setIsLogin] = useState(true);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [name, setName] = useState('');
-  const [role, setRole] = useState('patient'); // patient, doctor, attender
+  const [role, setRole] = useState('patient'); 
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
@@ -153,23 +136,22 @@ const AuthScreen = ({ auth, db, appId }) => {
     setError('');
     setLoading(true);
 
-    // Hardcoded Admin Override
+    // --- HARDCODED SUPER ADMIN BYPASS ---
     if (email === 'admin@gmail.com' && password === 'Admin@123') {
       try {
-        const userCred = await signInWithEmailAndPassword(auth, email, password);
-        await setDoc(doc(db, 'artifacts', appId, 'users', userCred.user.uid, 'profile', 'data'), {
-          uid: userCred.user.uid, email, name: 'Super Admin', role: 'admin', status: 'approved', createdAt: serverTimestamp()
-        }, { merge: true });
+        await signInWithEmailAndPassword(auth, email, password);
       } catch (err) {
         if (err.code === 'auth/user-not-found' || err.code === 'auth/invalid-credential' || err.code === 'auth/invalid-login-credentials') {
           try {
             const userCred = await createUserWithEmailAndPassword(auth, email, password);
             await updateProfile(userCred.user, { displayName: 'Super Admin' });
-            await setDoc(doc(db, 'artifacts', appId, 'users', userCred.user.uid, 'profile', 'data'), {
-              uid: userCred.user.uid, email, name: 'Super Admin', role: 'admin', status: 'approved', createdAt: serverTimestamp()
-            });
-          } catch (createErr) { setError(createErr.message); }
-        } else { setError(err.message); }
+            
+            // Create Admin Profile
+            const adminData = { uid: userCred.user.uid, email, name: 'Super Admin', role: 'admin', status: 'approved', createdAt: serverTimestamp() };
+            await setDoc(doc(db, 'artifacts', appId, 'users', userCred.user.uid, 'profile', 'data'), adminData);
+            await setDoc(doc(db, 'artifacts', appId, 'all_users', userCred.user.uid), adminData);
+          } catch (createErr) { setError(createErr.message); setLoading(false); return; }
+        } else { setError(err.message); setLoading(false); return; }
       }
       setLoading(false);
       return;
@@ -183,23 +165,21 @@ const AuthScreen = ({ auth, db, appId }) => {
         const user = userCredential.user;
         await updateProfile(user, { displayName: name });
         
-        // Attenders and Doctors start as pending. Patients are instantly approved.
+        // Patients are auto-approved. Doctors/Attenders are pending.
         const status = role === 'patient' ? 'approved' : 'pending';
         
-        await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'profile', 'data'), {
-          uid: user.uid, email: user.email, name, role, status, createdAt: serverTimestamp()
-        });
-
-        if (status === 'pending') {
-          // Write to a separate collection for easy admin querying
-          await setDoc(doc(db, 'artifacts', appId, 'pending_users', user.uid), {
-            uid: user.uid, email: user.email, name, role, status: 'pending', createdAt: serverTimestamp()
-          });
-        }
+        const userData = { uid: user.uid, email: user.email, name, role, status, mobile: '', age: '', gender: '', createdAt: serverTimestamp() };
+        
+        // Write to personal profile
+        await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'profile', 'data'), userData);
+        
+        // CRITICAL FIX: Write to global all_users collection for Admin visibility
+        await setDoc(doc(db, 'artifacts', appId, 'all_users', user.uid), userData);
       }
     } catch (err) {
+      console.error("Auth Error:", err);
       if (err.code === 'auth/operation-not-allowed') {
-        setError("Email/Password auth is disabled in Firebase. Enable it in Authentication > Sign-in method.");
+        setError("Email/Password auth is disabled. Please enable 'Email/Password' in your Firebase Console under Authentication > Sign-in method.");
       } else {
         setError(err.message.replace("Firebase: ", ""));
       }
@@ -209,13 +189,12 @@ const AuthScreen = ({ auth, db, appId }) => {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-[radial-gradient(ellipse_at_top_right,_var(--tw-gradient-stops))] from-blue-100 via-white to-cyan-50 p-4">
-      <div className="absolute inset-0 bg-grid-slate-100/[0.04] bg-[size:32px_32px]"></div>
-      <div className="max-w-md w-full bg-white/80 backdrop-blur-xl rounded-3xl shadow-2xl border border-white/50 p-8 z-10 relative overflow-hidden animate-fadeInUp">
+    <div className="w-full flex items-center justify-center p-4 py-12">
+      <div className="max-w-md w-full bg-white/80 backdrop-blur-xl rounded-3xl shadow-2xl border border-gray-200 p-8 z-10 relative overflow-hidden animate-fadeInUp">
         <div className="absolute top-0 left-0 w-full h-2 bg-gradient-to-r from-blue-500 via-indigo-500 to-cyan-400"></div>
-        <div className="flex justify-center mb-8"><Logo /></div>
+        <div className="flex justify-center mb-8"><Logo className="scale-110" /></div>
         <h2 className="text-3xl font-extrabold text-gray-900 text-center mb-2 tracking-tight">{isLogin ? 'Welcome Back' : 'Create Account'}</h2>
-        <p className="text-gray-500 text-center mb-6">{isLogin ? 'Sign in to access your portal' : 'Join Vaidya Mithra today'}</p>
+        <p className="text-gray-500 text-center mb-6">{isLogin ? 'Sign in to access your healthcare portal' : 'Join Vaidya Mithra today'}</p>
 
         <div className="flex p-1 bg-gray-100/80 rounded-xl mb-6">
           <button onClick={() => {setIsLogin(true); setError('');}} className={`flex-1 py-2 text-sm font-semibold rounded-lg transition-all duration-300 ${isLogin ? 'bg-white text-blue-700 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}>Sign In</button>
@@ -237,7 +216,11 @@ const AuthScreen = ({ auth, db, appId }) => {
               </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Select Role</label>
-                <div className="relative"><div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none"><Icon name="users" size={18} className="text-gray-400" /></div><select value={role} onChange={e=>setRole(e.target.value)} className="w-full pl-10 pr-4 py-3 bg-white/50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none appearance-none"><option value="patient">Patient</option><option value="doctor">Doctor</option><option value="attender">Attender</option></select></div>
+                <div className="relative"><div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none"><Icon name="users" size={18} className="text-gray-400" /></div>
+                  <select value={role} onChange={e=>setRole(e.target.value)} className="w-full pl-10 pr-4 py-3 bg-white/50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none appearance-none">
+                    <option value="patient">Patient</option><option value="doctor">Doctor</option><option value="attender">Attender</option>
+                  </select>
+                </div>
               </div>
             </>
           )}
@@ -260,11 +243,9 @@ const AuthScreen = ({ auth, db, appId }) => {
 };
 
 const PendingApprovalScreen = ({ auth }) => (
-  <div className="min-h-screen flex items-center justify-center bg-gray-50 p-4">
+  <div className="w-full flex items-center justify-center p-4 py-12">
     <div className="max-w-md w-full bg-white rounded-3xl shadow-xl border border-gray-100 p-8 text-center animate-fadeInUp">
-      <div className="w-20 h-20 bg-amber-100 rounded-full flex items-center justify-center mx-auto mb-6">
-        <Icon name="clock" size={32} className="text-amber-600" />
-      </div>
+      <div className="w-20 h-20 bg-amber-100 rounded-full flex items-center justify-center mx-auto mb-6"><Icon name="clock" size={32} className="text-amber-600" /></div>
       <h2 className="text-2xl font-extrabold text-gray-900 mb-3">Account Pending Review</h2>
       <p className="text-gray-600 mb-8 leading-relaxed">Your registration as a healthcare professional has been received. Please wait while administration verifies your credentials. You will be granted access automatically once approved.</p>
       <button onClick={() => signOut(auth)} className="px-6 py-3 bg-gray-100 text-gray-700 font-bold rounded-xl hover:bg-gray-200 transition">Sign Out</button>
@@ -272,102 +253,70 @@ const PendingApprovalScreen = ({ auth }) => (
   </div>
 );
 
+// =================================================================================
+// --- DYNAMIC NAVBAR ---
+// =================================================================================
+
 const NavBar = ({ currentPage, onNavigate, userRole, auth, db, userId, appId }) => {
     const [isMenuOpen, setIsMenuOpen] = useState(false);
     const [notifications, setNotifications] = useState([]);
-    const [showNotifMenu, setShowNotifMenu] = useState(false);
 
-    // Fetch notifications ONLY for patients
+    // Real-time Notification Listener (For Patients)
     useEffect(() => {
-        if (!userId || !db || !appId || userRole !== 'patient') return;
-        const q = query(collection(db, `artifacts/${appId}/users/${userId}/notifications`), orderBy('timestamp', 'desc'), limit(10));
-        return onSnapshot(q, (snap) => setNotifications(snap.docs.map(d => ({id: d.id, ...d.data()}))));
+        if (!db || !userId || !appId || userRole !== 'patient') return;
+        const q = query(collection(db, `artifacts/${appId}/users/${userId}/notifications`), orderBy('timestamp', 'desc'), limit(5));
+        const unsub = onSnapshot(q, (snap) => setNotifications(snap.docs.map(d => ({id: d.id, ...d.data()}))));
+        return () => unsub();
     }, [db, userId, appId, userRole]);
 
-    const markAsRead = async (notifId) => {
-        await updateDoc(doc(db, `artifacts/${appId}/users/${userId}/notifications`, notifId), { read: true });
-    };
-
     const getNavItems = () => {
-      if (userRole === 'doctor') return [{ id: "doctor-home", name: "Dashboard", icon: "home" }, { id: "doctor-history", name: "My Patients", icon: "users" }];
-      if (userRole === 'attender') return [{ id: "attender-home", name: "Queue", icon: "home" }, { id: "attender-history", name: "History", icon: "history" }];
-      if (userRole === 'admin') return [{ id: "admin-home", name: "Approvals", icon: "shield" }, { id: "admin-history", name: "System Log", icon: "activity" }];
-      return [
-          { id: "home", name: "Home", icon: "home" },
-          { id: "appointments", name: "Appointments", icon: "calendar" },
-          { id: "prediction", name: "AI Triage", icon: "activity" },
-          { id: "docbot", name: "DocBot", icon: "messageSquare" },
-          { id: "hospitals", name: "Hospitals", icon: "hospital" },
-      ];
+      if (userRole === 'doctor') return [{ id: "doctor-home", name: "Dashboard", icon: "home" }, { id: "doctor-history", name: "History", icon: "history" }, { id: "profile", name: "Profile", icon: "user" }, { id: "contact", name: "Support", icon: "mail" }];
+      if (userRole === 'attender') return [{ id: "attender-home", name: "Queue", icon: "home" }, { id: "profile", name: "Profile", icon: "user" }, { id: "contact", name: "Support", icon: "mail" }];
+      if (userRole === 'admin') return [{ id: "admin-home", name: "Dashboard", icon: "activity" }, { id: "admin-approvals", name: "Approvals", icon: "checkCircle" }, { id: "admin-users", name: "Users", icon: "users" }, { id: "admin-history", name: "System Log", icon: "history" }, { id: "profile", name: "Profile", icon: "user" }, { id: "contact", name: "Support", icon: "mail" }];
+      // Patient
+      return [{ id: "home", name: "Home", icon: "home" }, { id: "appointments", name: "Appointments", icon: "calendar" }, { id: "prediction", name: "AI Triage", icon: "activity" }, { id: "docbot", name: "DocBot", icon: "messageSquare" }, { id: "hospitals", name: "Hospitals", icon: "hospital" }, { id: "profile", name: "Profile", icon: "user" }, { id: "contact", name: "Support", icon: "mail" }];
     };
 
     const navItems = getNavItems();
     const handleNavigation = (id) => { onNavigate(id); setIsMenuOpen(false); };
-    const unreadCount = notifications.filter(n => !n.read).length;
+    const unreadNotifs = notifications.filter(n => !n.read).length;
 
     return (
         <nav className="fixed top-0 left-0 right-0 z-50 bg-white/80 backdrop-blur-md shadow-sm border-b border-gray-200/80 flex-shrink-0 transition-all">
             <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
                 <div className="flex justify-between items-center h-16">
-                    <a href="#" onClick={(e) => { e.preventDefault(); handleNavigation(navItems[0].id); }} className="no-underline">
-                        <Logo />
-                    </a>
-                    
-                    <div className="hidden md:flex items-center space-x-2">
+                    <a href="#" onClick={(e) => { e.preventDefault(); handleNavigation(navItems[0].id); }} className="no-underline"><Logo /></a>
+                    <div className="hidden lg:flex items-center space-x-1">
                         {navItems.map((item) => (
                             <a key={item.id} href="#" onClick={(e) => { e.preventDefault(); handleNavigation(item.id); }} className={`px-3 py-2 rounded-xl text-sm font-semibold flex items-center transition duration-150 ${currentPage === item.id ? 'bg-blue-50 text-blue-700' : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'}`}>
                                 <Icon name={item.icon} size={18} className="mr-2" color="currentColor" />{item.name}
                             </a>
                         ))}
-                        
-                        {/* Patient Notification Bell */}
                         {userRole === 'patient' && (
-                            <div className="relative ml-2">
-                                <button onClick={() => setShowNotifMenu(!showNotifMenu)} className="p-2 text-gray-600 hover:bg-gray-100 rounded-full relative">
-                                    <Icon name="bell" size={20} />
-                                    {unreadCount > 0 && <span className="absolute top-1 right-1.5 w-2 h-2 bg-red-500 rounded-full"></span>}
-                                </button>
-                                {showNotifMenu && (
-                                    <div className="absolute right-0 mt-2 w-80 bg-white rounded-2xl shadow-xl border border-gray-100 overflow-hidden z-50">
-                                        <div className="p-4 bg-gray-50 border-b border-gray-100 font-bold text-gray-800">Notifications</div>
-                                        <div className="max-h-64 overflow-y-auto">
-                                            {notifications.length === 0 ? <p className="p-4 text-sm text-gray-500 text-center">No notifications yet.</p> : 
-                                                notifications.map(n => (
-                                                    <div key={n.id} onClick={() => markAsRead(n.id)} className={`p-4 border-b border-gray-50 text-sm cursor-pointer hover:bg-gray-50 transition ${!n.read ? 'bg-blue-50/50' : ''}`}>
-                                                        <p className={`${!n.read ? 'font-bold text-gray-900' : 'text-gray-700'}`}>{n.message}</p>
-                                                    </div>
-                                                ))
-                                            }
-                                        </div>
-                                    </div>
-                                )}
-                            </div>
+                            <button onClick={() => handleNavigation('appointments')} className="relative p-2 ml-2 text-gray-600 hover:bg-gray-100 rounded-full transition">
+                                <Icon name="bell" size={20} />
+                                {unreadNotifs > 0 && <span className="absolute top-1 right-1.5 w-2 h-2 bg-red-500 rounded-full animate-pulse"></span>}
+                            </button>
                         )}
-
                         <div className="w-px h-6 bg-gray-200 mx-2"></div>
-                        <button onClick={() => signOut(auth)} className="px-3 py-2 rounded-xl text-sm font-semibold flex items-center text-red-600 hover:bg-red-50 transition duration-150">
-                          <Icon name="logOut" size={18} className="mr-2" /> Logout
-                        </button>
+                        <button onClick={() => signOut(auth)} className="px-3 py-2 rounded-xl text-sm font-semibold flex items-center text-red-600 hover:bg-red-50 transition duration-150"><Icon name="logOut" size={18} className="mr-2" />Logout</button>
                     </div>
-                    
-                    <button className="md:hidden p-2 rounded-lg text-gray-700 hover:bg-gray-100 transition" onClick={() => setIsMenuOpen(!isMenuOpen)}>
+                    <button className="lg:hidden p-2 rounded-lg text-gray-700 hover:bg-gray-100 transition" onClick={() => setIsMenuOpen(!isMenuOpen)}>
                          {isMenuOpen ? <Icon name="x" size={24} /> : <Icon name="menu" size={24} />}
                     </button>
                 </div>
             </div>
 
             {isMenuOpen && (
-                <div className="md:hidden absolute top-16 left-0 w-full bg-white/95 backdrop-blur-lg shadow-xl border-t border-gray-200/80 transform origin-top transition-all duration-300 ease-out" style={{ maxHeight: 'calc(100vh - 4rem)' }}>
+                <div className="lg:hidden absolute top-16 left-0 w-full bg-white/95 backdrop-blur-lg shadow-xl border-t border-gray-200/80 transform origin-top transition-all duration-300 ease-out" style={{ maxHeight: 'calc(100vh - 4rem)', overflowY: 'auto' }}>
                     <div className="flex flex-col p-4 space-y-2">
                         {navItems.map((item) => (
                             <a key={item.id} href="#" onClick={(e) => { e.preventDefault(); handleNavigation(item.id); }} className={`px-4 py-3 rounded-xl text-lg font-medium flex items-center transition duration-150 ${currentPage === item.id ? 'bg-blue-50 text-blue-700' : 'text-gray-700 hover:bg-gray-50'}`}>
-                                <Icon name={item.icon} size={20} className="mr-3" color="currentColor" /> {item.name}
+                                <Icon name={item.icon} size={20} className="mr-3" color="currentColor" />{item.name}
                             </a>
                         ))}
                         <div className="h-px w-full bg-gray-200 my-2"></div>
-                        <button onClick={() => signOut(auth)} className="px-4 py-3 rounded-xl text-lg font-medium flex items-center text-red-600 hover:bg-red-50 transition duration-150 text-left">
-                          <Icon name="logOut" size={20} className="mr-3" /> Sign Out
-                        </button>
+                        <button onClick={() => signOut(auth)} className="px-4 py-3 rounded-xl text-lg font-medium flex items-center text-red-600 hover:bg-red-50 transition duration-150 text-left"><Icon name="logOut" size={20} className="mr-3" />Sign Out</button>
                     </div>
                 </div>
             )}
@@ -375,342 +324,603 @@ const NavBar = ({ currentPage, onNavigate, userRole, auth, db, userId, appId }) 
     );
 };
 
-const StatCard = ({ title, value, icon, colorClass }) => (
-  <div className="bg-white/80 backdrop-blur-lg rounded-2xl p-6 border border-gray-200/50 shadow-sm hover:shadow-md transition-shadow">
-    <div className="flex justify-between items-start">
-      <div><p className="text-sm font-medium text-gray-500 mb-1">{title}</p><h3 className="text-3xl font-extrabold text-gray-900">{value}</h3></div>
-      <div className={`p-3 rounded-xl ${colorClass}`}><Icon name={icon} size={24} /></div>
+// =================================================================================
+// --- PROFILE COMPONENT (FOR ALL ROLES) ---
+// =================================================================================
+
+const ProfilePage = ({ db, auth, userId, appId, userRole }) => {
+  const [profile, setProfile] = useState({ name: '', mobile: '', age: '', gender: 'Male' });
+  const [loading, setLoading] = useState(false);
+  const [message, setMessage] = useState({ text: '', type: '' });
+  const [newPassword, setNewPassword] = useState('');
+
+  useEffect(() => {
+    const fetchProfile = async () => {
+      try {
+        const docRef = doc(db, 'artifacts', appId, 'users', userId, 'profile', 'data');
+        const snap = await getDoc(docRef);
+        if (snap.exists()) {
+          const data = snap.data();
+          setProfile(p => ({ ...p, name: data.name || '', mobile: data.mobile || '', age: data.age || '', gender: data.gender || 'Male' }));
+        }
+      } catch (e) { console.error(e); }
+    };
+    fetchProfile();
+  }, [db, userId, appId]);
+
+  const handleUpdate = async (e) => {
+    e.preventDefault();
+    setLoading(true); setMessage({ text: '', type: '' });
+    try {
+      // 1. Update Password if provided
+      if (newPassword) {
+        if (newPassword.length < 6) throw new Error("Password must be at least 6 characters.");
+        await updatePassword(auth.currentUser, newPassword);
+      }
+      
+      // 2. Update Firestore
+      const userRef = doc(db, 'artifacts', appId, 'users', userId, 'profile', 'data');
+      const allUserRef = doc(db, 'artifacts', appId, 'all_users', userId);
+      
+      await updateDoc(userRef, { name: profile.name, mobile: profile.mobile, age: profile.age, gender: profile.gender });
+      
+      // Update global list if exists (Admin might not have one depending on legacy creation, so we check/merge)
+      try { await updateDoc(allUserRef, { name: profile.name, mobile: profile.mobile, age: profile.age, gender: profile.gender }); } catch(e){}
+
+      // 3. Update Auth Profile
+      await updateProfile(auth.currentUser, { displayName: profile.name });
+
+      setMessage({ text: 'Profile updated successfully!', type: 'success' });
+      setNewPassword('');
+    } catch (err) {
+      if(err.code === 'auth/requires-recent-login') setMessage({ text: 'Please sign out and sign back in to change your password.', type: 'error' });
+      else setMessage({ text: err.message, type: 'error' });
+    } finally { setLoading(false); }
+  };
+
+  return (
+    <div className="p-4 sm:p-8 max-w-3xl mx-auto w-full animate-fadeInUp">
+      <div className="bg-white rounded-3xl shadow-lg border border-gray-100 overflow-hidden">
+        <div className="bg-gradient-to-r from-blue-600 to-indigo-600 p-8 text-white">
+          <div className="flex items-center space-x-4">
+            <div className="w-20 h-20 bg-white/20 rounded-full flex items-center justify-center backdrop-blur-sm"><Icon name="user" size={40} /></div>
+            <div><h1 className="text-3xl font-extrabold">{profile.name || 'User Profile'}</h1><p className="text-blue-100 font-medium uppercase tracking-wide">{userRole}</p></div>
+          </div>
+        </div>
+        
+        <div className="p-8">
+          {message.text && (
+            <div className={`mb-6 p-4 rounded-xl flex items-center ${message.type === 'success' ? 'bg-green-50 text-green-800 border border-green-200' : 'bg-red-50 text-red-800 border border-red-200'}`}>
+              <Icon name={message.type === 'success' ? "checkCircle" : "alertTriangle"} className="mr-3 flex-shrink-0" /> {message.text}
+            </div>
+          )}
+
+          <form onSubmit={handleUpdate} className="space-y-6">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              <div><label className="block text-sm font-bold text-gray-700 mb-2">Full Name</label><input type="text" value={profile.name} onChange={e=>setProfile({...profile, name: e.target.value})} required className="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none" /></div>
+              <div><label className="block text-sm font-bold text-gray-700 mb-2">Email (Read Only)</label><input type="email" value={auth.currentUser?.email || ''} readOnly className="w-full p-3 bg-gray-100 text-gray-500 border border-gray-200 rounded-xl outline-none cursor-not-allowed" /></div>
+              <div><label className="block text-sm font-bold text-gray-700 mb-2">Mobile Number</label><input type="tel" value={profile.mobile} onChange={e=>setProfile({...profile, mobile: e.target.value})} placeholder="+1 234 567 8900" className="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none" /></div>
+              <div className="grid grid-cols-2 gap-4">
+                <div><label className="block text-sm font-bold text-gray-700 mb-2">Age</label><input type="number" value={profile.age} onChange={e=>setProfile({...profile, age: e.target.value})} placeholder="e.g. 30" className="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none" /></div>
+                <div><label className="block text-sm font-bold text-gray-700 mb-2">Gender</label><select value={profile.gender} onChange={e=>setProfile({...profile, gender: e.target.value})} className="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none"><option>Male</option><option>Female</option><option>Other</option></select></div>
+              </div>
+            </div>
+            
+            <div className="pt-6 border-t border-gray-100">
+              <h3 className="text-lg font-bold text-gray-900 mb-4 flex items-center"><Icon name="shield" size={20} className="mr-2 text-gray-400"/> Security</h3>
+              <div><label className="block text-sm font-bold text-gray-700 mb-2">New Password (leave blank to keep current)</label><input type="password" value={newPassword} onChange={e=>setNewPassword(e.target.value)} placeholder="••••••••" className="w-full max-w-md p-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none" /></div>
+            </div>
+
+            <div className="flex justify-end pt-4"><button type="submit" disabled={loading} className="px-8 py-3 bg-blue-600 text-white font-bold rounded-xl shadow-md hover:bg-blue-700 transition disabled:opacity-50">{loading ? 'Saving...' : 'Save Profile'}</button></div>
+          </form>
+        </div>
+      </div>
     </div>
+  );
+};
+
+// =================================================================================
+// --- ADMIN COMPONENTS ---
+// =================================================================================
+
+const StatCard = ({ title, value, icon, colorClass }) => (
+  <div className="bg-white rounded-2xl p-6 border border-gray-100 shadow-sm flex justify-between items-center transition-transform hover:-translate-y-1 hover:shadow-md">
+    <div><p className="text-sm font-bold text-gray-500 uppercase tracking-wider mb-1">{title}</p><h3 className="text-4xl font-extrabold text-gray-900">{value}</h3></div>
+    <div className={`p-4 rounded-2xl ${colorClass}`}><Icon name={icon} size={32} /></div>
   </div>
 );
 
-const AppointmentBadge = ({ status }) => {
-    const styles = { requested: 'bg-yellow-100 text-yellow-800', scheduled: 'bg-blue-100 text-blue-800', ready: 'bg-purple-100 text-purple-800', completed: 'bg-green-100 text-green-800' };
-    return <span className={`px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wide ${styles[status]}`}>{status}</span>;
+const AdminDashboard = ({ db, appId }) => {
+  const [stats, setStats] = useState({ patients: 0, doctors: 0, attenders: 0, total: 0 });
+  useEffect(() => {
+    const q = query(collection(db, `artifacts/${appId}/all_users`));
+    return onSnapshot(q, (snap) => {
+      const users = snap.docs.map(d => d.data());
+      setStats({
+        patients: users.filter(u => u.role === 'patient').length,
+        doctors: users.filter(u => u.role === 'doctor' && u.status === 'approved').length,
+        attenders: users.filter(u => u.role === 'attender' && u.status === 'approved').length,
+        total: users.length
+      });
+    });
+  }, [db, appId]);
+
+  return (
+    <div className="p-4 sm:p-8 max-w-7xl mx-auto w-full animate-fadeInUp">
+      <div className="mb-8"><h1 className="text-3xl font-extrabold text-gray-900">System Dashboard</h1><p className="text-gray-500">Live platform analytics and user counts.</p></div>
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+        <StatCard title="Total Users" value={stats.total} icon="users" colorClass="bg-blue-100 text-blue-600" />
+        <StatCard title="Active Doctors" value={stats.doctors} icon="stethoscope" colorClass="bg-emerald-100 text-emerald-600" />
+        <StatCard title="Active Attenders" value={stats.attenders} icon="activity" colorClass="bg-purple-100 text-purple-600" />
+        <StatCard title="Patients" value={stats.patients} icon="user" colorClass="bg-amber-100 text-amber-600" />
+      </div>
+    </div>
+  );
 };
 
-const AdminDashboard = ({ db, appId }) => {
-    const [pendingUsers, setPendingUsers] = useState([]);
-    useEffect(() => {
-        // Querying all pending and sorting client-side to avoid Index requirement
-        const q = query(collection(db, `artifacts/${appId}/pending_users`));
-        return onSnapshot(q, (snap) => {
-            const users = snap.docs.map(d => ({id: d.id, ...d.data()}));
-            setPendingUsers(users.sort((a,b) => (b.createdAt?.seconds||0) - (a.createdAt?.seconds||0)));
-        });
-    }, [db, appId]);
+const AdminApprovals = ({ db, appId }) => {
+  const [pending, setPending] = useState([]);
+  
+  useEffect(() => {
+    // We query all_users to find pending to avoid needing composite indexes.
+    const q = query(collection(db, `artifacts/${appId}/all_users`));
+    return onSnapshot(q, (snap) => {
+      const users = snap.docs.map(d => d.data());
+      setPending(users.filter(u => u.status === 'pending').sort((a,b) => (b.createdAt?.seconds||0) - (a.createdAt?.seconds||0)));
+    });
+  }, [db, appId]);
 
-    const handleApprove = async (user) => {
-        await updateDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'profile', 'data'), { status: 'approved' });
-        // If doctor, add to global doctor list for scheduling
-        if (user.role === 'doctor') {
-            await setDoc(doc(db, 'artifacts', appId, 'approved_doctors', user.uid), { uid: user.uid, name: user.name });
-        }
-        await deleteDoc(doc(db, 'artifacts', appId, 'pending_users', user.uid));
-    };
+  const handleApprove = async (user) => {
+    try {
+      await updateDoc(doc(db, 'artifacts', appId, 'all_users', user.uid), { status: 'approved' });
+      await updateDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'profile', 'data'), { status: 'approved' });
+      // If doctor, add to quick-lookup collection for attenders
+      if (user.role === 'doctor') {
+        await setDoc(doc(db, 'artifacts', appId, 'approved_doctors', user.uid), { uid: user.uid, name: user.name });
+      }
+    } catch(e) { console.error("Error approving:", e); }
+  };
 
-    return (
-        <div className="p-4 sm:p-8 max-w-7xl mx-auto h-full animate-fadeInUp">
-            <h1 className="text-3xl font-extrabold text-gray-900 mb-8">Admin Approvals</h1>
-            <h3 className="font-bold text-lg mb-4 text-blue-800">Pending Registrations</h3>
-            {pendingUsers.length === 0 ? (
-                <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-8 text-center text-gray-500">No pending approvals at the moment.</div>
-            ) : (
-                <div className="grid gap-4">
-                    {pendingUsers.map(user => (
-                        <div key={user.id} className="bg-white p-5 rounded-2xl border border-gray-200 shadow-sm flex justify-between items-center">
-                            <div><p className="font-bold text-lg">{user.name}</p><p className="text-sm text-gray-500 uppercase font-semibold">{user.role} | {user.email}</p></div>
-                            <button onClick={() => handleApprove(user)} className="px-5 py-2.5 bg-green-600 text-white font-bold rounded-xl hover:bg-green-700 shadow-sm transition">Approve</button>
-                        </div>
-                    ))}
-                </div>
-            )}
+  return (
+    <div className="p-4 sm:p-8 max-w-7xl mx-auto w-full animate-fadeInUp">
+      <div className="mb-8"><h1 className="text-3xl font-extrabold text-gray-900">Pending Approvals</h1><p className="text-gray-500">Review and approve newly registered healthcare staff.</p></div>
+      {pending.length === 0 ? (
+        <div className="bg-white rounded-3xl p-12 text-center border border-gray-100 shadow-sm"><div className="w-20 h-20 bg-gray-50 rounded-full flex items-center justify-center mx-auto mb-4"><Icon name="checkCircle" size={32} className="text-green-500"/></div><h3 className="text-xl font-bold text-gray-900">All caught up!</h3><p className="text-gray-500">There are no accounts waiting for approval.</p></div>
+      ) : (
+        <div className="grid gap-4">
+          {pending.map(user => (
+            <div key={user.uid} className="bg-white p-6 rounded-2xl border border-gray-200 shadow-sm flex flex-col md:flex-row justify-between md:items-center gap-4 hover:shadow-md transition">
+              <div className="flex items-center space-x-4">
+                <div className={`w-12 h-12 rounded-xl flex items-center justify-center ${user.role==='doctor'?'bg-emerald-100 text-emerald-600':'bg-purple-100 text-purple-600'}`}><Icon name={user.role==='doctor'?'stethoscope':'activity'} size={24}/></div>
+                <div><p className="font-extrabold text-xl text-gray-900">{user.name}</p><p className="text-sm font-semibold text-gray-500 uppercase tracking-wide">{user.role} &bull; <span className="lowercase normal-case font-normal text-gray-500">{user.email}</span></p></div>
+              </div>
+              <button onClick={() => handleApprove(user)} className="px-6 py-3 bg-gray-900 text-white font-bold rounded-xl hover:bg-black shadow-md transition">Approve Access</button>
+            </div>
+          ))}
         </div>
-    );
+      )}
+    </div>
+  );
+};
+
+const AdminUsers = ({ db, appId }) => {
+  const [users, setUsers] = useState([]);
+  const [filter, setFilter] = useState('all');
+
+  useEffect(() => {
+    const q = query(collection(db, `artifacts/${appId}/all_users`));
+    return onSnapshot(q, (snap) => setUsers(snap.docs.map(d => d.data()).sort((a,b) => (b.createdAt?.seconds||0) - (a.createdAt?.seconds||0))));
+  }, [db, appId]);
+
+  const filteredUsers = filter === 'all' ? users : users.filter(u => u.role === filter);
+
+  return (
+    <div className="p-4 sm:p-8 max-w-7xl mx-auto w-full animate-fadeInUp">
+      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-8 gap-4">
+        <div><h1 className="text-3xl font-extrabold text-gray-900">User Directory</h1><p className="text-gray-500">Manage all registered accounts.</p></div>
+        <select value={filter} onChange={e=>setFilter(e.target.value)} className="p-3 bg-white border border-gray-300 rounded-xl font-semibold text-gray-700 outline-none shadow-sm focus:ring-2 focus:ring-blue-500">
+          <option value="all">All Roles</option><option value="patient">Patients</option><option value="doctor">Doctors</option><option value="attender">Attenders</option><option value="admin">Admins</option>
+        </select>
+      </div>
+      
+      <div className="bg-white rounded-3xl shadow-sm border border-gray-200 overflow-hidden">
+        <div className="overflow-x-auto">
+          <table className="w-full text-left border-collapse">
+            <thead><tr className="bg-gray-50 border-b border-gray-200 text-xs uppercase tracking-wider text-gray-500"><th className="p-4 font-bold">Name / Email</th><th className="p-4 font-bold">Role & Status</th><th className="p-4 font-bold">Demographics</th><th className="p-4 font-bold">Joined</th></tr></thead>
+            <tbody className="divide-y divide-gray-100">
+              {filteredUsers.map(u => (
+                <tr key={u.uid} className="hover:bg-gray-50/50 transition">
+                  <td className="p-4"><p className="font-bold text-gray-900">{u.name}</p><p className="text-xs text-gray-500">{u.email}</p></td>
+                  <td className="p-4">
+                    <span className={`inline-block px-3 py-1 rounded-md text-xs font-bold uppercase tracking-wide mr-2 ${u.role==='doctor'?'bg-emerald-100 text-emerald-800':u.role==='attender'?'bg-purple-100 text-purple-800':u.role==='admin'?'bg-gray-800 text-white':'bg-blue-100 text-blue-800'}`}>{u.role}</span>
+                    <span className={`inline-block px-2 py-1 rounded text-xs font-bold uppercase ${u.status==='approved'?'text-green-600': 'text-amber-600'}`}>{u.status}</span>
+                  </td>
+                  <td className="p-4 text-sm text-gray-700">{u.age ? `${u.age} yrs, ` : ''}{u.gender ? u.gender : 'N/A'}<br/><span className="text-gray-500 text-xs">{u.mobile || 'No Phone'}</span></td>
+                  <td className="p-4 text-sm text-gray-500">{u.createdAt?.seconds ? new Date(u.createdAt.seconds * 1000).toLocaleDateString() : 'Unknown'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {filteredUsers.length === 0 && <div className="p-12 text-center text-gray-500 font-medium">No users found for this category.</div>}
+        </div>
+      </div>
+    </div>
+  );
 };
 
 const AdminHistory = ({ db, appId }) => {
-    const [appointments, setAppointments] = useState([]);
-    useEffect(() => {
-        return onSnapshot(collection(db, `artifacts/${appId}/appointments`), (snap) => {
-            setAppointments(snap.docs.map(d => ({id: d.id, ...d.data()})).sort((a,b) => (b.timestamp?.seconds||0) - (a.timestamp?.seconds||0)));
-        });
-    }, [db, appId]);
+  const [history, setHistory] = useState([]);
+  useEffect(() => {
+    // Fetch all global appointments for the system log
+    const q = query(collection(db, `artifacts/${appId}/appointments`), orderBy('timestamp', 'desc'), limit(100));
+    return onSnapshot(q, snap => setHistory(snap.docs.map(d => ({id: d.id, ...d.data()}))));
+  }, [db, appId]);
 
-    return (
-        <div className="p-4 sm:p-8 max-w-7xl mx-auto h-full animate-fadeInUp">
-            <h1 className="text-3xl font-extrabold text-gray-900 mb-8">System Activity Log</h1>
-            <div className="space-y-4">
-                {appointments.length === 0 ? <p className="text-gray-500">No system activity found.</p> : appointments.map(a => (
-                    <div key={a.id} className="bg-white p-5 rounded-2xl shadow-sm border border-gray-200 flex flex-col md:flex-row justify-between md:items-center gap-4">
-                        <div>
-                            <div className="flex items-center space-x-3 mb-1"><AppointmentBadge status={a.status} /><span className="text-sm text-gray-500">{new Date(a.timestamp?.seconds * 1000).toLocaleString()}</span></div>
-                            <p className="font-bold">Patient: {a.patientName} <span className="text-gray-400 font-normal">→ Doctor: {a.doctorName || 'Unassigned'}</span></p>
-                            <p className="text-sm text-gray-600">Reason: {a.reason}</p>
-                        </div>
-                        {a.status === 'completed' && <div className="text-sm bg-gray-50 p-3 rounded-lg border max-w-sm"><p className="font-semibold text-green-700">Notes:</p><p className="truncate">{a.doctorNotes}</p></div>}
-                    </div>
-                ))}
+  return (
+    <div className="p-4 sm:p-8 max-w-7xl mx-auto w-full animate-fadeInUp">
+      <div className="mb-8"><h1 className="text-3xl font-extrabold text-gray-900">System Log</h1><p className="text-gray-500">Global history of all platform appointments.</p></div>
+      <div className="space-y-4">
+        {history.length === 0 ? <p className="text-gray-500 bg-white p-8 rounded-2xl border border-gray-100 text-center">No system activity recorded yet.</p> : history.map(item => (
+          <div key={item.id} className="bg-white p-5 rounded-2xl shadow-sm border border-gray-200 flex flex-col md:flex-row md:items-center justify-between gap-4">
+            <div>
+              <div className="flex items-center space-x-3 mb-1">
+                <span className={`px-2 py-1 text-xs font-bold uppercase rounded ${item.status==='completed'?'bg-green-100 text-green-700': item.status==='scheduled'?'bg-blue-100 text-blue-700': 'bg-gray-100 text-gray-700'}`}>{item.status}</span>
+                <span className="text-xs text-gray-400 font-semibold">{new Date(item.timestamp?.seconds * 1000).toLocaleString()}</span>
+              </div>
+              <p className="font-bold text-gray-900">Patient: {item.patientName} <span className="font-normal text-gray-400">→</span> Dr. {item.doctorName || 'Unassigned'}</p>
+              <p className="text-sm text-gray-600 mt-1 truncate max-w-2xl"><strong>Reason:</strong> {item.reason}</p>
             </div>
-        </div>
-    );
+            {item.status === 'completed' && <div className="md:text-right flex-shrink-0"><p className="text-xs font-bold text-green-600 mb-1">Consultation Finished</p><p className="text-xs text-gray-500">{new Date(item.completedAt?.seconds*1000).toLocaleString()}</p></div>}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
 };
 
+// =================================================================================
+// --- ATTENDER & DOCTOR WORKFLOW COMPONENTS ---
+// =================================================================================
+
 const AttenderDashboard = ({ db, appId }) => {
-    const [appointments, setAppointments] = useState([]);
-    const [doctors, setDoctors] = useState([]);
-    const [scheduleModal, setScheduleModal] = useState(null); 
-    const [vitalsModal, setVitalsModal] = useState(null);
+  const [appointments, setAppointments] = useState([]);
+  const [doctors, setDoctors] = useState([]);
+  const [scheduleModal, setScheduleModal] = useState(null); 
+  const [vitalsModal, setVitalsModal] = useState(null);
 
-    useEffect(() => {
-        const unsubApt = onSnapshot(collection(db, `artifacts/${appId}/appointments`), (snap) => {
-            setAppointments(snap.docs.map(d => ({id: d.id, ...d.data()})).sort((a,b) => (b.timestamp?.seconds||0) - (a.timestamp?.seconds||0)));
-        });
-        const unsubDoc = onSnapshot(collection(db, `artifacts/${appId}/approved_doctors`), (snap) => setDoctors(snap.docs.map(d => d.data())));
-        return () => { unsubApt(); unsubDoc(); };
-    }, [db, appId]);
+  useEffect(() => {
+      // Client-side sort to avoid manual Firebase index requirements
+      const unsubApt = onSnapshot(collection(db, `artifacts/${appId}/appointments`), (snap) => {
+          const apts = snap.docs.map(d => ({id: d.id, ...d.data()}));
+          setAppointments(apts.sort((a,b) => (b.timestamp?.seconds||0) - (a.timestamp?.seconds||0)));
+      });
+      const unsubDoc = onSnapshot(collection(db, `artifacts/${appId}/approved_doctors`), (snap) => setDoctors(snap.docs.map(d => d.data())));
+      return () => { unsubApt(); unsubDoc(); };
+  }, [db, appId]);
 
-    const handleSchedule = async (e) => {
-        e.preventDefault();
-        const docId = e.target.doctorId.value;
-        const doctorName = doctors.find(d => d.uid === docId)?.name || 'Doctor';
-        await updateDoc(doc(db, `artifacts/${appId}/appointments`, scheduleModal.id), { status: 'scheduled', doctorId: docId, doctorName, date: e.target.date.value, time: e.target.time.value });
-        // Send notification to patient
-        await setDoc(doc(collection(db, `artifacts/${appId}/users/${scheduleModal.patientId}/notifications`)), { message: `Your appointment is scheduled with ${doctorName} on ${e.target.date.value} at ${e.target.time.value}.`, timestamp: serverTimestamp(), read: false });
-        setScheduleModal(null);
-    };
+  const handleSchedule = async (e) => {
+      e.preventDefault();
+      const docId = e.target.doctorId.value;
+      const doctorName = doctors.find(d => d.uid === docId)?.name || 'Doctor';
+      const date = e.target.date.value;
+      const time = e.target.time.value;
+      
+      // Update Appointment
+      await updateDoc(doc(db, `artifacts/${appId}/appointments`, scheduleModal.id), { status: 'scheduled', doctorId: docId, doctorName, date, time });
+      
+      // Send Real-time Notification to Patient
+      await setDoc(doc(collection(db, `artifacts/${appId}/users/${scheduleModal.patientId}/notifications`)), { 
+        message: `Your appointment is scheduled with Dr. ${doctorName} on ${date} at ${time}.`, 
+        timestamp: serverTimestamp(), 
+        read: false 
+      });
+      setScheduleModal(null);
+  };
 
-    const handleVitals = async (e) => {
-        e.preventDefault();
-        await updateDoc(doc(db, `artifacts/${appId}/appointments`, vitalsModal.id), { status: 'ready', vitals: { bp: e.target.bp.value, hr: e.target.hr.value, glucose: e.target.glucose.value } });
-        setVitalsModal(null);
-    };
+  const handleVitals = async (e) => {
+      e.preventDefault();
+      await updateDoc(doc(db, `artifacts/${appId}/appointments`, vitalsModal.id), { 
+        status: 'ready', 
+        vitals: { bp: e.target.bp.value, hr: e.target.hr.value, glucose: e.target.glucose.value } 
+      });
+      setVitalsModal(null);
+  };
 
-    return (
-        <div className="p-4 sm:p-8 max-w-7xl mx-auto h-full animate-fadeInUp">
-            <h1 className="text-3xl font-extrabold text-gray-900 mb-6">Attender Triage Hub</h1>
-            <div className="grid gap-6">
-                {/* Pending Requests */}
-                <div>
-                    <h3 className="font-bold text-lg text-blue-800 mb-3 border-b pb-2">New Requests (Needs Scheduling)</h3>
-                    <div className="space-y-3">
-                        {appointments.filter(a => a.status === 'requested').length === 0 ? <p className="text-sm text-gray-500">No new requests.</p> : appointments.filter(a => a.status === 'requested').map(a => (
-                            <div key={a.id} className="bg-white p-5 rounded-2xl border border-gray-200 shadow-sm flex flex-col md:flex-row justify-between md:items-center gap-4">
-                                <div><p className="font-bold text-lg">{a.patientName}</p><p className="text-sm text-gray-600">Reason: {a.reason}</p></div>
-                                <button onClick={() => setScheduleModal(a)} className="px-5 py-2 bg-blue-600 text-white font-bold rounded-xl shadow-sm hover:bg-blue-700 transition">Schedule</button>
-                            </div>
-                        ))}
-                    </div>
-                </div>
-                
-                {/* Scheduled (Needs Vitals) */}
-                <div>
-                    <h3 className="font-bold text-lg text-purple-800 mb-3 border-b pb-2 mt-4">Scheduled Arrivals (Needs Vitals)</h3>
-                    <div className="space-y-3">
-                        {appointments.filter(a => a.status === 'scheduled').length === 0 ? <p className="text-sm text-gray-500">No scheduled arrivals pending vitals.</p> : appointments.filter(a => a.status === 'scheduled').map(a => (
-                            <div key={a.id} className="bg-white p-5 rounded-2xl border border-gray-200 shadow-sm flex flex-col md:flex-row justify-between md:items-center gap-4">
-                                <div><p className="font-bold text-lg">{a.patientName}</p><p className="text-sm text-gray-600">With {a.doctorName} at {a.time} on {a.date}</p></div>
-                                <button onClick={() => setVitalsModal(a)} className="px-5 py-2 bg-purple-600 text-white font-bold rounded-xl shadow-sm hover:bg-purple-700 transition">Enter Vitals</button>
-                            </div>
-                        ))}
-                    </div>
-                </div>
-            </div>
+  const requested = appointments.filter(a => a.status === 'requested');
+  const scheduled = appointments.filter(a => a.status === 'scheduled');
 
-            {/* Modals */}
-            {scheduleModal && (
-                <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-                    <form onSubmit={handleSchedule} className="bg-white p-8 rounded-3xl w-full max-w-md shadow-2xl animate-fadeInUp">
-                        <h3 className="font-bold text-2xl mb-6 text-gray-900">Schedule Patient</h3>
-                        <p className="mb-4 text-sm text-gray-600">Patient: <strong>{scheduleModal.patientName}</strong></p>
-                        <div className="space-y-4">
-                            <select name="doctorId" required className="w-full p-3 border border-gray-300 rounded-xl outline-none focus:ring-2 focus:ring-blue-500">
-                                <option value="">Select Doctor...</option>
-                                {doctors.map(d => <option key={d.uid} value={d.uid}>{d.name}</option>)}
-                            </select>
-                            <input type="date" name="date" required className="w-full p-3 border border-gray-300 rounded-xl outline-none focus:ring-2 focus:ring-blue-500"/>
-                            <input type="time" name="time" required className="w-full p-3 border border-gray-300 rounded-xl outline-none focus:ring-2 focus:ring-blue-500"/>
-                        </div>
-                        <div className="mt-8 flex justify-end space-x-3"><button type="button" onClick={()=>setScheduleModal(null)} className="px-5 py-2.5 text-gray-600 font-semibold hover:bg-gray-100 rounded-xl transition">Cancel</button><button type="submit" className="px-5 py-2.5 bg-blue-600 text-white font-bold rounded-xl shadow-md hover:bg-blue-700 transition">Confirm Booking</button></div>
-                    </form>
-                </div>
-            )}
-            {vitalsModal && (
-                <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-                    <form onSubmit={handleVitals} className="bg-white p-8 rounded-3xl w-full max-w-md shadow-2xl animate-fadeInUp">
-                        <h3 className="font-bold text-2xl mb-6 text-gray-900">Record Vitals</h3>
-                        <p className="mb-4 text-sm text-gray-600">Patient: <strong>{vitalsModal.patientName}</strong></p>
-                        <div className="space-y-4">
-                            <input type="text" name="bp" placeholder="Blood Pressure (e.g. 120/80)" required className="w-full p-3 border border-gray-300 rounded-xl outline-none focus:ring-2 focus:ring-purple-500"/>
-                            <input type="number" name="hr" placeholder="Heart Rate (BPM)" required className="w-full p-3 border border-gray-300 rounded-xl outline-none focus:ring-2 focus:ring-purple-500"/>
-                            <input type="number" name="glucose" placeholder="Glucose (mg/dL) - Optional" className="w-full p-3 border border-gray-300 rounded-xl outline-none focus:ring-2 focus:ring-purple-500"/>
-                        </div>
-                        <div className="mt-8 flex justify-end space-x-3"><button type="button" onClick={()=>setVitalsModal(null)} className="px-5 py-2.5 text-gray-600 font-semibold hover:bg-gray-100 rounded-xl transition">Cancel</button><button type="submit" className="px-5 py-2.5 bg-purple-600 text-white font-bold rounded-xl shadow-md hover:bg-purple-700 transition">Save & Mark Ready</button></div>
-                    </form>
-                </div>
-            )}
-        </div>
-    );
+  return (
+      <div className="p-4 sm:p-8 max-w-7xl mx-auto w-full animate-fadeInUp">
+          <div className="mb-8"><h1 className="text-3xl font-extrabold text-gray-900">Attender Triage Hub</h1><p className="text-gray-500">Manage queues, assign doctors, and record vitals.</p></div>
+          
+          <div className="grid lg:grid-cols-2 gap-8">
+              {/* Needs Scheduling */}
+              <div className="bg-white rounded-3xl shadow-sm border border-gray-200 p-6">
+                  <h3 className="font-bold text-xl text-blue-800 mb-6 flex items-center"><Icon name="calendar" className="mr-2"/> New Requests ({requested.length})</h3>
+                  <div className="space-y-4">
+                      {requested.length === 0 ? <p className="text-sm text-gray-500 italic">No new requests.</p> : requested.map(a => (
+                          <div key={a.id} className="bg-blue-50/50 p-5 rounded-2xl border border-blue-100 flex flex-col gap-3">
+                              <div className="flex justify-between items-start">
+                                <div><p className="font-extrabold text-lg text-gray-900">{a.patientName}</p><p className="text-xs text-gray-500">{new Date(a.timestamp?.seconds*1000).toLocaleString()}</p></div>
+                                <button onClick={() => setScheduleModal(a)} className="px-5 py-2 bg-blue-600 text-white text-sm font-bold rounded-xl shadow-sm hover:bg-blue-700 transition">Schedule</button>
+                              </div>
+                              <p className="text-sm text-gray-700"><strong>Reason:</strong> {a.reason}</p>
+                          </div>
+                      ))}
+                  </div>
+              </div>
+              
+              {/* Needs Vitals */}
+              <div className="bg-white rounded-3xl shadow-sm border border-gray-200 p-6">
+                  <h3 className="font-bold text-xl text-purple-800 mb-6 flex items-center"><Icon name="activity" className="mr-2"/> Scheduled Arrivals ({scheduled.length})</h3>
+                  <div className="space-y-4">
+                      {scheduled.length === 0 ? <p className="text-sm text-gray-500 italic">No scheduled patients pending vitals.</p> : scheduled.map(a => (
+                          <div key={a.id} className="bg-purple-50/50 p-5 rounded-2xl border border-purple-100 flex flex-col gap-3">
+                              <div className="flex justify-between items-start">
+                                <div><p className="font-extrabold text-lg text-gray-900">{a.patientName}</p><p className="text-sm font-bold text-purple-700 mt-1">{a.date} at {a.time}</p></div>
+                                <button onClick={() => setVitalsModal(a)} className="px-5 py-2 bg-purple-600 text-white text-sm font-bold rounded-xl shadow-sm hover:bg-purple-700 transition">Record Vitals</button>
+                              </div>
+                              <p className="text-xs text-gray-600">Assigned to: <strong>Dr. {a.doctorName}</strong></p>
+                          </div>
+                      ))}
+                  </div>
+              </div>
+          </div>
+
+          {/* Modals */}
+          {scheduleModal && (
+              <div className="fixed inset-0 bg-gray-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+                  <form onSubmit={handleSchedule} className="bg-white p-8 rounded-3xl w-full max-w-md shadow-2xl animate-fadeInUp">
+                      <h3 className="font-extrabold text-2xl mb-2 text-gray-900">Schedule Patient</h3>
+                      <p className="mb-6 text-sm text-gray-600">Assigning doctor for <strong>{scheduleModal.patientName}</strong></p>
+                      <div className="space-y-4">
+                          <div><label className="block text-xs font-bold text-gray-700 mb-1 uppercase">Select Doctor</label><select name="doctorId" required className="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-500"><option value="">Choose...</option>{doctors.map(d => <option key={d.uid} value={d.uid}>Dr. {d.name}</option>)}</select></div>
+                          <div className="grid grid-cols-2 gap-4">
+                            <div><label className="block text-xs font-bold text-gray-700 mb-1 uppercase">Date</label><input type="date" name="date" required className="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-500"/></div>
+                            <div><label className="block text-xs font-bold text-gray-700 mb-1 uppercase">Time</label><input type="time" name="time" required className="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-500"/></div>
+                          </div>
+                      </div>
+                      <div className="mt-8 flex justify-end space-x-3"><button type="button" onClick={()=>setScheduleModal(null)} className="px-5 py-2.5 text-gray-600 font-bold hover:bg-gray-100 rounded-xl transition">Cancel</button><button type="submit" className="px-5 py-2.5 bg-blue-600 text-white font-bold rounded-xl shadow-md hover:bg-blue-700 transition">Confirm Booking</button></div>
+                  </form>
+              </div>
+          )}
+          {vitalsModal && (
+              <div className="fixed inset-0 bg-gray-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+                  <form onSubmit={handleVitals} className="bg-white p-8 rounded-3xl w-full max-w-md shadow-2xl animate-fadeInUp">
+                      <h3 className="font-extrabold text-2xl mb-2 text-gray-900">Record Vitals</h3>
+                      <p className="mb-6 text-sm text-gray-600">Patient arrival: <strong>{vitalsModal.patientName}</strong></p>
+                      <div className="space-y-4">
+                          <div><label className="block text-xs font-bold text-gray-700 mb-1 uppercase">Blood Pressure</label><input type="text" name="bp" placeholder="120/80" required className="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl outline-none focus:ring-2 focus:ring-purple-500"/></div>
+                          <div><label className="block text-xs font-bold text-gray-700 mb-1 uppercase">Heart Rate (BPM)</label><input type="number" name="hr" placeholder="72" required className="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl outline-none focus:ring-2 focus:ring-purple-500"/></div>
+                          <div><label className="block text-xs font-bold text-gray-700 mb-1 uppercase">Glucose (mg/dL) - Optional</label><input type="number" name="glucose" placeholder="95" className="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl outline-none focus:ring-2 focus:ring-purple-500"/></div>
+                      </div>
+                      <div className="mt-8 flex justify-end space-x-3"><button type="button" onClick={()=>setVitalsModal(null)} className="px-5 py-2.5 text-gray-600 font-bold hover:bg-gray-100 rounded-xl transition">Cancel</button><button type="submit" className="px-5 py-2.5 bg-purple-600 text-white font-bold rounded-xl shadow-md hover:bg-purple-700 transition">Mark Ready for Doctor</button></div>
+                  </form>
+              </div>
+          )}
+      </div>
+  );
 };
 
 const DoctorDashboard = ({ db, appId, userId }) => {
-    const [appointments, setAppointments] = useState([]);
-    const [consultModal, setConsultModal] = useState(null);
+  const [appointments, setAppointments] = useState([]);
+  const [consultModal, setConsultModal] = useState(null);
 
-    useEffect(() => {
-        return onSnapshot(collection(db, `artifacts/${appId}/appointments`), (snap) => {
-            const apts = snap.docs.map(d => ({id: d.id, ...d.data()}));
-            setAppointments(apts.filter(a => a.doctorId === userId).sort((a,b) => (b.timestamp?.seconds||0) - (a.timestamp?.seconds||0)));
-        });
-    }, [db, appId, userId]);
+  useEffect(() => {
+      return onSnapshot(collection(db, `artifacts/${appId}/appointments`), (snap) => {
+          const apts = snap.docs.map(d => ({id: d.id, ...d.data()}));
+          // Filter client-side
+          setAppointments(apts.filter(a => a.doctorId === userId).sort((a,b) => (b.timestamp?.seconds||0) - (a.timestamp?.seconds||0)));
+      });
+  }, [db, appId, userId]);
 
-    const handleComplete = async (e) => {
-        e.preventDefault();
-        await updateDoc(doc(db, `artifacts/${appId}/appointments`, consultModal.id), { status: 'completed', doctorNotes: e.target.notes.value, completedAt: serverTimestamp() });
-        setConsultModal(null);
-    };
+  const handleComplete = async (e) => {
+      e.preventDefault();
+      await updateDoc(doc(db, `artifacts/${appId}/appointments`, consultModal.id), { 
+        status: 'completed', 
+        doctorNotes: e.target.notes.value, 
+        completedAt: serverTimestamp() 
+      });
+      setConsultModal(null);
+  };
 
-    return (
-        <div className="p-4 sm:p-8 max-w-7xl mx-auto h-full animate-fadeInUp">
-            <h1 className="text-3xl font-extrabold text-gray-900 mb-6">Doctor Workspace</h1>
-            
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
-              <StatCard title="Patients Ready" value={appointments.filter(a=>a.status==='ready').length} icon="user" colorClass="bg-green-100 text-green-600" />
-              <StatCard title="Scheduled Today" value={appointments.filter(a=>a.status==='scheduled').length} icon="clock" colorClass="bg-blue-100 text-blue-600" />
-              <StatCard title="Completed" value={appointments.filter(a=>a.status==='completed').length} icon="checkCircle" colorClass="bg-gray-100 text-gray-600" />
-            </div>
+  const ready = appointments.filter(a => a.status === 'ready');
+  const scheduled = appointments.filter(a => a.status === 'scheduled');
+  const completed = appointments.filter(a => a.status === 'completed');
 
-            <h3 className="font-bold text-lg mb-4 text-green-800 border-b pb-2">Patients Ready for Consultation</h3>
-            <div className="grid gap-4 mb-8">
-                {appointments.filter(a => a.status === 'ready').length === 0 ? <p className="text-gray-500">No patients are currently waiting.</p> : appointments.filter(a => a.status === 'ready').map(a => (
-                    <div key={a.id} className="bg-white p-6 rounded-2xl border border-gray-200 shadow-sm flex flex-col md:flex-row justify-between md:items-center gap-4">
-                        <div>
-                            <p className="font-bold text-xl text-gray-900">{a.patientName}</p>
-                            <p className="text-sm text-gray-600 mt-1"><strong>Reason:</strong> {a.reason}</p>
-                            <div className="flex space-x-3 mt-3">
-                                <span className="px-3 py-1 bg-gray-100 rounded-lg text-xs font-semibold">BP: {a.vitals?.bp}</span>
-                                <span className="px-3 py-1 bg-gray-100 rounded-lg text-xs font-semibold">HR: {a.vitals?.hr}</span>
-                                {a.vitals?.glucose && <span className="px-3 py-1 bg-gray-100 rounded-lg text-xs font-semibold">Glu: {a.vitals?.glucose}</span>}
+  return (
+      <div className="p-4 sm:p-8 max-w-7xl mx-auto w-full animate-fadeInUp">
+          <div className="mb-8"><h1 className="text-3xl font-extrabold text-gray-900">Doctor Workspace</h1><p className="text-gray-500">Conduct consultations and review patient data.</p></div>
+          
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+            <StatCard title="Patients Ready Now" value={ready.length} icon="user" colorClass="bg-emerald-100 text-emerald-600" />
+            <StatCard title="Scheduled Today" value={scheduled.length} icon="clock" colorClass="bg-blue-100 text-blue-600" />
+            <StatCard title="Total Completed" value={completed.length} icon="checkCircle" colorClass="bg-gray-100 text-gray-600" />
+          </div>
+
+          <div className="bg-white rounded-3xl shadow-sm border border-gray-200 p-6 md:p-8">
+            <h3 className="font-bold text-xl text-emerald-800 mb-6 flex items-center border-b border-gray-100 pb-4"><Icon name="activity" className="mr-2"/> Consultation Queue (Ready)</h3>
+            <div className="grid gap-4">
+                {ready.length === 0 ? <p className="text-gray-500 text-center py-8">No patients are currently waiting in the ready queue.</p> : ready.map(a => (
+                    <div key={a.id} className="bg-emerald-50/30 p-6 rounded-2xl border border-emerald-100 flex flex-col lg:flex-row justify-between lg:items-center gap-6">
+                        <div className="flex-grow">
+                            <div className="flex justify-between items-start mb-2"><p className="font-extrabold text-2xl text-gray-900">{a.patientName}</p><span className="bg-emerald-100 text-emerald-800 text-xs font-bold px-2 py-1 rounded">READY</span></div>
+                            <p className="text-sm text-gray-700 mb-4"><strong>Complaint:</strong> {a.reason}</p>
+                            <div className="flex flex-wrap gap-2">
+                                <span className="px-3 py-1.5 bg-white border border-gray-200 rounded-lg text-xs font-bold text-gray-600 shadow-sm">BP: {a.vitals?.bp}</span>
+                                <span className="px-3 py-1.5 bg-white border border-gray-200 rounded-lg text-xs font-bold text-gray-600 shadow-sm">HR: {a.vitals?.hr} bpm</span>
+                                {a.vitals?.glucose && <span className="px-3 py-1.5 bg-white border border-gray-200 rounded-lg text-xs font-bold text-gray-600 shadow-sm">Glucose: {a.vitals?.glucose}</span>}
                             </div>
                         </div>
-                        <button onClick={() => setConsultModal(a)} className="px-8 py-3 bg-green-600 text-white font-bold rounded-xl shadow-md hover:bg-green-700 transition">Start Consultation</button>
+                        <button onClick={() => setConsultModal(a)} className="px-8 py-4 bg-emerald-600 text-white font-bold rounded-xl shadow-md hover:bg-emerald-700 transition flex-shrink-0 flex items-center justify-center">Start Consult <Icon name="chevronRight" className="ml-2"/></button>
                     </div>
                 ))}
             </div>
+          </div>
 
-            {consultModal && (
-                <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-                    <form onSubmit={handleComplete} className="bg-white p-8 rounded-3xl w-full max-w-2xl shadow-2xl animate-fadeInUp">
-                        <div className="flex justify-between items-center mb-6">
-                            <h3 className="font-bold text-2xl text-gray-900">Consultation</h3>
-                            <button type="button" onClick={()=>setConsultModal(null)} className="text-gray-400 hover:text-gray-700"><Icon name="x" size={24}/></button>
-                        </div>
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
-                            <div className="bg-gray-50 p-4 rounded-xl border border-gray-100">
-                                <p className="text-xs text-gray-500 uppercase font-bold mb-1">Patient Details</p>
-                                <p className="font-semibold text-lg">{consultModal.patientName}</p>
-                                <p className="text-sm text-gray-700 mt-2"><strong>Complaint:</strong> {consultModal.reason}</p>
+          {consultModal && (
+              <div className="fixed inset-0 bg-gray-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+                  <form onSubmit={handleComplete} className="bg-white p-6 sm:p-8 rounded-3xl w-full max-w-3xl shadow-2xl animate-fadeInUp max-h-[90vh] flex flex-col">
+                      <div className="flex justify-between items-center mb-6 flex-shrink-0">
+                          <h3 className="font-extrabold text-2xl text-gray-900">Active Consultation</h3>
+                          <button type="button" onClick={()=>setConsultModal(null)} className="text-gray-400 hover:text-gray-900 bg-gray-100 p-2 rounded-full transition"><Icon name="x" size={20}/></button>
+                      </div>
+                      
+                      <div className="flex-grow overflow-y-auto pr-2 space-y-6">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                            <div className="bg-gray-50 p-5 rounded-2xl border border-gray-200">
+                                <p className="text-xs text-gray-500 uppercase tracking-wider font-bold mb-1">Patient</p>
+                                <p className="font-extrabold text-xl text-gray-900">{consultModal.patientName}</p>
+                                <p className="text-sm text-gray-700 mt-2 leading-relaxed"><strong>Reason:</strong> {consultModal.reason}</p>
                             </div>
-                            <div className="bg-purple-50 p-4 rounded-xl border border-purple-100">
-                                <p className="text-xs text-purple-600 uppercase font-bold mb-1">Recorded Vitals</p>
-                                <div className="space-y-1 mt-2 text-sm">
-                                    <p><strong>Blood Pressure:</strong> {consultModal.vitals?.bp}</p>
-                                    <p><strong>Heart Rate:</strong> {consultModal.vitals?.hr} bpm</p>
-                                    {consultModal.vitals?.glucose && <p><strong>Glucose:</strong> {consultModal.vitals?.glucose} mg/dL</p>}
+                            <div className="bg-emerald-50 p-5 rounded-2xl border border-emerald-100">
+                                <p className="text-xs text-emerald-600 uppercase tracking-wider font-bold mb-3">Today's Vitals</p>
+                                <div className="grid grid-cols-2 gap-2 text-sm font-medium">
+                                    <div className="bg-white p-2 rounded-lg border border-emerald-50 shadow-sm"><span className="text-gray-500 text-xs block">BP</span>{consultModal.vitals?.bp}</div>
+                                    <div className="bg-white p-2 rounded-lg border border-emerald-50 shadow-sm"><span className="text-gray-500 text-xs block">HR</span>{consultModal.vitals?.hr}</div>
+                                    {consultModal.vitals?.glucose && <div className="bg-white p-2 rounded-lg border border-emerald-50 shadow-sm col-span-2"><span className="text-gray-500 text-xs block">Glucose</span>{consultModal.vitals?.glucose}</div>}
                                 </div>
                             </div>
                         </div>
-                        <label className="block font-bold text-gray-700 mb-2">Clinical Notes & Prescription</label>
-                        <textarea name="notes" required rows="5" placeholder="Enter diagnosis, treatment plan, and prescribed medications..." className="w-full p-4 border border-gray-300 rounded-xl outline-none focus:ring-2 focus:ring-green-500 resize-none"></textarea>
-                        <div className="mt-8 flex justify-end space-x-3"><button type="submit" className="px-6 py-3 bg-green-600 text-white font-bold rounded-xl shadow-md hover:bg-green-700 transition">Complete & Save to Record</button></div>
-                    </form>
-                </div>
-            )}
-        </div>
-    );
+                        
+                        <div>
+                          <label className="block text-sm font-bold text-gray-800 mb-2">Clinical Notes & Prescriptions</label>
+                          <textarea name="notes" required rows="6" placeholder="Enter diagnosis, prescribed medications, and follow-up plan..." className="w-full p-4 bg-gray-50 border border-gray-200 rounded-xl outline-none focus:ring-2 focus:ring-emerald-500 resize-none font-medium text-gray-800"></textarea>
+                        </div>
+                      </div>
+
+                      <div className="mt-6 pt-4 border-t border-gray-100 flex justify-end flex-shrink-0">
+                        <button type="submit" className="px-8 py-3.5 bg-gray-900 text-white font-bold rounded-xl shadow-lg hover:bg-black transition w-full sm:w-auto">Complete & Save Record</button>
+                      </div>
+                  </form>
+              </div>
+          )}
+      </div>
+  );
 };
 
 const DoctorHistory = ({ db, appId, userId }) => {
-    const [appointments, setAppointments] = useState([]);
-    useEffect(() => {
-        return onSnapshot(collection(db, `artifacts/${appId}/appointments`), (snap) => {
-            const apts = snap.docs.map(d => ({id: d.id, ...d.data()}));
-            setAppointments(apts.filter(a => a.doctorId === userId && a.status === 'completed').sort((a,b) => (b.timestamp?.seconds||0) - (a.timestamp?.seconds||0)));
-        });
-    }, [db, appId, userId]);
+  const [history, setHistory] = useState([]);
+  useEffect(() => {
+      return onSnapshot(collection(db, `artifacts/${appId}/appointments`), (snap) => {
+          const apts = snap.docs.map(d => ({id: d.id, ...d.data()}));
+          setHistory(apts.filter(a => a.doctorId === userId && a.status === 'completed').sort((a,b) => (b.completedAt?.seconds||0) - (a.completedAt?.seconds||0)));
+      });
+  }, [db, appId, userId]);
 
-    return (
-        <div className="p-4 sm:p-8 max-w-7xl mx-auto h-full animate-fadeInUp">
-            <h1 className="text-3xl font-extrabold text-gray-900 mb-8">My Patient History</h1>
-            <div className="space-y-4">
-                {appointments.length === 0 ? <p className="text-gray-500">No completed consultations found.</p> : appointments.map(a => (
-                    <div key={a.id} className="bg-white p-6 rounded-2xl shadow-sm border border-gray-200">
-                        <div className="flex justify-between items-center mb-3">
-                            <h3 className="font-bold text-xl">{a.patientName}</h3>
-                            <span className="text-sm text-gray-500">{new Date(a.completedAt?.seconds * 1000).toLocaleString()}</span>
-                        </div>
-                        <p className="text-sm text-gray-600 mb-4"><strong>Presented With:</strong> {a.reason}</p>
-                        <div className="bg-green-50 p-4 rounded-xl border border-green-100">
-                            <p className="text-xs text-green-800 uppercase font-bold mb-2">Doctor's Notes & Prescription</p>
-                            <p className="text-sm text-gray-800 whitespace-pre-wrap">{a.doctorNotes}</p>
-                        </div>
-                    </div>
-                ))}
-            </div>
-        </div>
-    );
+  return (
+      <div className="p-4 sm:p-8 max-w-4xl mx-auto w-full animate-fadeInUp">
+          <div className="mb-8"><h1 className="text-3xl font-extrabold text-gray-900">My Patient History</h1><p className="text-gray-500">Records of your completed consultations.</p></div>
+          <div className="space-y-6">
+              {history.length === 0 ? <p className="text-gray-500 text-center bg-white p-12 rounded-3xl border border-gray-100">No past consultations found.</p> : history.map(a => (
+                  <div key={a.id} className="bg-white p-6 sm:p-8 rounded-3xl shadow-sm border border-gray-200">
+                      <div className="flex flex-col sm:flex-row justify-between sm:items-center mb-4 pb-4 border-b border-gray-100">
+                          <h3 className="font-extrabold text-2xl text-gray-900">{a.patientName}</h3>
+                          <span className="text-sm font-semibold text-gray-500 mt-1 sm:mt-0">{a.completedAt ? new Date(a.completedAt.seconds * 1000).toLocaleString() : 'Unknown Date'}</span>
+                      </div>
+                      <p className="text-sm text-gray-700 mb-4"><strong>Presented With:</strong> {a.reason}</p>
+                      <div className="bg-gray-50 p-5 rounded-2xl border border-gray-200">
+                          <p className="text-xs text-gray-500 uppercase tracking-wider font-bold mb-2">Doctor's Notes & Prescription</p>
+                          <p className="text-sm font-medium text-gray-800 whitespace-pre-wrap leading-relaxed">{a.doctorNotes}</p>
+                      </div>
+                  </div>
+              ))}
+          </div>
+      </div>
+  );
 };
+
+
+// =================================================================================
+// --- PATIENT COMPONENTS ---
+// =================================================================================
 
 const PatientAppointments = ({ db, userId, appId, userName }) => {
-    const [appointments, setAppointments] = useState([]);
-    const [isBooking, setIsBooking] = useState(false);
-    const [reason, setReason] = useState('');
+  const [appointments, setAppointments] = useState([]);
+  const [isBooking, setIsBooking] = useState(false);
+  const [reason, setReason] = useState('');
 
-    useEffect(() => {
-        return onSnapshot(collection(db, `artifacts/${appId}/appointments`), (snap) => {
-            const apts = snap.docs.map(d => ({id: d.id, ...d.data()}));
-            setAppointments(apts.filter(a => a.patientId === userId).sort((a,b) => (b.timestamp?.seconds||0) - (a.timestamp?.seconds||0)));
-        });
-    }, [db, userId, appId]);
+  useEffect(() => {
+      return onSnapshot(collection(db, `artifacts/${appId}/appointments`), (snap) => {
+          const apts = snap.docs.map(d => ({id: d.id, ...d.data()}));
+          setAppointments(apts.filter(a => a.patientId === userId).sort((a,b) => (b.timestamp?.seconds||0) - (a.timestamp?.seconds||0)));
+      });
+  }, [db, userId, appId]);
 
-    const handleBook = async (e) => {
-        e.preventDefault();
-        await setDoc(doc(collection(db, `artifacts/${appId}/appointments`)), { patientId: userId, patientName: userName || 'Patient', reason, status: 'requested', timestamp: serverTimestamp() });
-        setIsBooking(false); setReason('');
+  const handleBook = async (e) => {
+      e.preventDefault();
+      await setDoc(doc(collection(db, `artifacts/${appId}/appointments`)), { 
+        patientId: userId, 
+        patientName: userName || 'Patient', 
+        reason, 
+        status: 'requested', 
+        timestamp: serverTimestamp() 
+      });
+      setIsBooking(false); setReason('');
+  };
+
+  const getStatusBadge = (status) => {
+    const styles = { 
+      requested: 'bg-yellow-100 text-yellow-800 border-yellow-200', 
+      scheduled: 'bg-blue-100 text-blue-800 border-blue-200', 
+      ready: 'bg-purple-100 text-purple-800 border-purple-200', 
+      completed: 'bg-green-100 text-green-800 border-green-200' 
     };
+    return <span className={`px-3 py-1 rounded-lg text-xs font-bold uppercase tracking-wide border ${styles[status]}`}>{status}</span>;
+  };
 
-    return (
-        <div className="p-4 sm:p-8 max-w-4xl mx-auto animate-fadeInUp">
-            <div className="flex justify-between items-center mb-8">
-                <h1 className="text-3xl font-extrabold text-gray-900">My Appointments</h1>
-                <button onClick={() => setIsBooking(true)} className="px-5 py-2.5 bg-blue-600 text-white font-bold rounded-xl shadow-md hover:bg-blue-700 transition">Book New</button>
-            </div>
-            {isBooking && (
-                <form onSubmit={handleBook} className="bg-white p-6 rounded-3xl shadow-xl border border-gray-100 mb-8 animate-fadeIn">
-                    <h3 className="font-bold text-xl mb-4">Request Consultation</h3>
-                    <label className="block text-sm font-semibold text-gray-700 mb-2">Reason for Visit / Symptoms</label>
-                    <textarea value={reason} onChange={e=>setReason(e.target.value)} required rows="3" placeholder="Briefly describe what you are experiencing..." className="w-full p-4 border border-gray-300 rounded-xl outline-none focus:ring-2 focus:ring-blue-500 mb-4 resize-none"></textarea>
-                    <div className="flex justify-end space-x-3"><button type="button" onClick={()=>setIsBooking(false)} className="px-5 py-2.5 text-gray-600 font-semibold hover:bg-gray-100 rounded-xl transition">Cancel</button><button type="submit" className="px-5 py-2.5 bg-blue-600 text-white font-bold rounded-xl shadow-md hover:bg-blue-700 transition">Submit Request</button></div>
-                </form>
-            )}
-            <div className="space-y-4">
-                {appointments.length === 0 ? <p className="text-center text-gray-500 p-8 bg-white rounded-2xl border border-gray-100">You have no appointment history.</p> : appointments.map(a => (
-                    <div key={a.id} className="bg-white p-6 rounded-2xl shadow-sm border border-gray-200 hover:shadow-md transition">
-                        <div className="flex justify-between items-start mb-4">
-                            <div>
-                                <AppointmentBadge status={a.status} />
-                                <p className="text-sm text-gray-500 mt-2">{new Date(a.timestamp?.seconds * 1000).toLocaleString()}</p>
+  return (
+      <div className="p-4 sm:p-8 max-w-4xl mx-auto w-full animate-fadeInUp">
+          <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-8 gap-4">
+              <div><h1 className="text-3xl font-extrabold text-gray-900">My Appointments</h1><p className="text-gray-500 mt-1">Book and track your consultations.</p></div>
+              <button onClick={() => setIsBooking(true)} className="px-6 py-3 bg-blue-600 text-white font-bold rounded-xl shadow-lg hover:bg-blue-700 transition flex items-center">
+                <Icon name="calendar" className="mr-2"/> Request Consult
+              </button>
+          </div>
+          
+          {isBooking && (
+              <form onSubmit={handleBook} className="bg-white p-6 sm:p-8 rounded-3xl shadow-xl border border-gray-200 mb-8 animate-fadeIn">
+                  <h3 className="font-extrabold text-xl mb-4 text-gray-900">New Consultation Request</h3>
+                  <label className="block text-sm font-bold text-gray-700 mb-2">Reason for Visit / Symptoms</label>
+                  <textarea value={reason} onChange={e=>setReason(e.target.value)} required rows="4" placeholder="Briefly describe what you are experiencing..." className="w-full p-4 bg-gray-50 border border-gray-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-500 mb-6 resize-none font-medium"></textarea>
+                  <div className="flex justify-end space-x-3"><button type="button" onClick={()=>setIsBooking(false)} className="px-6 py-3 text-gray-600 font-bold hover:bg-gray-100 rounded-xl transition">Cancel</button><button type="submit" className="px-8 py-3 bg-gray-900 text-white font-bold rounded-xl shadow-md hover:bg-black transition">Submit Request</button></div>
+              </form>
+          )}
+
+          <div className="space-y-6">
+              {appointments.length === 0 ? <p className="text-center text-gray-500 p-12 bg-white rounded-3xl border border-gray-100 shadow-sm">You have no appointment history.</p> : appointments.map(a => (
+                  <div key={a.id} className="bg-white p-6 sm:p-8 rounded-3xl shadow-sm border border-gray-200 hover:shadow-md transition">
+                      <div className="flex flex-col sm:flex-row justify-between items-start mb-4 gap-4">
+                          <div>
+                              {getStatusBadge(a.status)}
+                              <p className="text-xs font-semibold text-gray-400 mt-3">Requested: {a.timestamp ? new Date(a.timestamp.seconds * 1000).toLocaleString() : ''}</p>
+                          </div>
+                          {(a.status==='scheduled'||a.status==='ready'||a.status==='completed') && (
+                            <div className="sm:text-right bg-blue-50/50 p-3 rounded-xl border border-blue-100">
+                              <span className="block font-extrabold text-blue-900 text-lg">{a.date} at {a.time}</span>
+                              <span className="text-sm font-medium text-blue-700">Dr. {a.doctorName}</span>
                             </div>
-                            {(a.status==='scheduled'||a.status==='ready') && <div className="text-right"><span className="block font-bold text-blue-600 text-lg">{a.date} at {a.time}</span><span className="text-sm text-gray-600">with {a.doctorName}</span></div>}
+                          )}
+                      </div>
+                      <p className="text-sm text-gray-800 font-medium"><strong>My Complaint:</strong> {a.reason}</p>
+                      
+                      {a.status === 'completed' && (
+                        <div className="mt-6 pt-6 border-t border-gray-100">
+                          <div className="bg-green-50 p-5 rounded-2xl border border-green-100">
+                            <p className="text-xs font-bold text-green-800 uppercase tracking-wider mb-2 flex items-center"><Icon name="fileText" size={14} className="mr-1"/> Doctor's Notes & Prescription</p>
+                            <p className="text-sm font-medium text-green-900 whitespace-pre-wrap leading-relaxed">{a.doctorNotes}</p>
+                          </div>
                         </div>
-                        <p className="text-sm text-gray-800"><strong>Reason:</strong> {a.reason}</p>
-                        {a.status === 'completed' && <div className="mt-4 pt-4 border-t border-gray-100 bg-gray-50 -mx-6 -mb-6 p-6 rounded-b-2xl"><p className="text-sm font-bold text-green-700 mb-1">Doctor's Notes & Prescription:</p><p className="text-sm text-gray-700 whitespace-pre-wrap">{a.doctorNotes}</p></div>}
-                    </div>
-                ))}
-            </div>
-        </div>
-    );
+                      )}
+                  </div>
+              ))}
+          </div>
+      </div>
+  );
 };
+
+
+// ... [KEEP ALL PREVIOUS PATIENT COMPONENTS EXACTLY THE SAME: HomePage, PredictionPage, DocBotPage, HospitalPage, ContactPage] ...
 
 const HomePage = ({ onNavigate }) => (
   <div className="h-full flex flex-col items-center justify-center bg-gradient-to-r from-blue-500 to-cyan-500 overflow-hidden p-4 sm:p-8">
@@ -744,8 +954,12 @@ const PredictionPage = ({ db, userId, authReady, appId }) => {
   useEffect(() => {
     if (!authReady || !userId || !db || !appId) return;
     try {
-      const q = query(collection(db, `artifacts/${appId}/users/${userId}/symptom_history`), orderBy('timestamp', 'desc'), limit(5));
-      return onSnapshot(q, (snapshot) => setHistory(snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id }))));
+      const historyCollectionRef = collection(db, `artifacts/${appId}/users/${userId}/symptom_history`);
+      const q = query(historyCollectionRef, orderBy('timestamp', 'desc'), limit(5));
+      const unsubscribe = onSnapshot(q, (snapshot) => {
+        setHistory(snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id })));
+      });
+      return () => unsubscribe();
     } catch (e) { console.error(e); }
   }, [db, userId, authReady, appId]);
 
@@ -778,7 +992,8 @@ const PredictionPage = ({ db, userId, authReady, appId }) => {
       setPredictionResult(parsedResult);
       
       if (db && userId && appId) {
-        await setDoc(doc(collection(db, `artifacts/${appId}/users/${userId}/symptom_history`)), { symptoms: selectedSymptoms, age, gender, result: parsedResult, timestamp: serverTimestamp() });
+        const historyCollectionRef = collection(db, `artifacts/${appId}/users/${userId}/symptom_history`);
+        await setDoc(doc(historyCollectionRef), { symptoms: selectedSymptoms, age, gender, result: parsedResult, timestamp: serverTimestamp() });
       }
     } catch (error) {
       setPredictionResult({ error: `Could not retrieve prediction. Error: ${error.message}` });
@@ -796,7 +1011,10 @@ const PredictionPage = ({ db, userId, authReady, appId }) => {
 
   return (
     <div className="p-4 sm:p-8 max-w-7xl mx-auto w-full animate-fadeInUp">
-      <div className="mb-6"><h2 className="text-3xl font-extrabold text-gray-900">Symptom Assessment</h2><p className="text-gray-500">Select symptoms to get an initial, non-diagnostic AI triage.</p></div>
+      <div className="mb-6">
+        <h2 className="text-3xl font-extrabold text-gray-900">Symptom Assessment</h2>
+        <p className="text-gray-500">Select symptoms to get an initial, non-diagnostic AI triage.</p>
+      </div>
 
       <div className="bg-white/80 backdrop-blur-lg shadow-sm rounded-2xl border border-gray-200/50 p-6 mb-6">
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
@@ -825,15 +1043,15 @@ const PredictionPage = ({ db, userId, authReady, appId }) => {
           <div className="flex-grow flex flex-wrap content-start gap-2 bg-gray-50 rounded-xl p-4 border border-dashed border-gray-300 overflow-y-auto min-h-[150px] max-h-[250px]">
             {selectedSymptoms.length === 0 ? <p className="text-gray-400 italic m-auto text-sm">Start selecting symptoms...</p> : 
               selectedSymptoms.map(symptom => (
-                <div key={symptom} className="flex h-fit items-center bg-blue-100 text-blue-800 text-xs font-bold px-3 py-1.5 rounded-full shadow-sm">
-                  {symptom} <button onClick={() => toggleSymptom(symptom)} className="ml-2 text-blue-600 hover:text-red-500 transition"><Icon name="x" size={14} /></button>
+                <div key={symptom} className="flex h-fit items-center bg-blue-100 text-blue-800 text-xs font-bold px-3 py-1.5 rounded-full">
+                  {symptom} <button onClick={() => toggleSymptom(symptom)} className="ml-2 text-blue-600 hover:text-red-500"><Icon name="x" size={14} /></button>
                 </div>
               ))
             }
           </div>
           <div className="flex justify-end space-x-3 mt-4">
-            <button onClick={() => setSelectedSymptoms([])} disabled={selectedSymptoms.length===0} className="px-5 py-2.5 text-sm font-bold text-gray-600 bg-gray-200 rounded-xl disabled:opacity-50 transition-all hover:scale-105">Clear</button>
-            <button onClick={handlePrediction} disabled={selectedSymptoms.length===0 || isLoading || !authReady} className="px-6 py-2.5 text-white font-bold bg-blue-600 hover:bg-blue-700 rounded-xl shadow-md disabled:opacity-50 transition-all hover:scale-105">
+            <button onClick={() => setSelectedSymptoms([])} disabled={selectedSymptoms.length===0} className="px-5 py-2.5 text-sm font-bold text-gray-600 bg-gray-200 rounded-xl disabled:opacity-50">Clear</button>
+            <button onClick={handlePrediction} disabled={selectedSymptoms.length===0 || isLoading || !authReady} className="px-6 py-2.5 text-white font-bold bg-blue-600 hover:bg-blue-700 rounded-xl shadow-md disabled:opacity-50 transition-colors">
               {isLoading ? "Analyzing..." : "Get AI Triage"}
             </button>
           </div>
@@ -841,9 +1059,9 @@ const PredictionPage = ({ db, userId, authReady, appId }) => {
       </div>
 
       <div id="prediction-results" className="mt-8">
-        {isLoading && <div className="space-y-4 w-full"><SkeletonCard /><SkeletonCard /></div>}
+        {isLoading && <div className="space-y-4"><SkeletonCard /><SkeletonCard /></div>}
         {isEmergency && !isLoading && (
-          <div className="bg-red-50 border border-red-200 p-5 rounded-2xl mb-6 flex items-start text-red-800 animate-fadeIn w-full">
+          <div className="bg-red-50 border border-red-200 p-5 rounded-2xl mb-6 flex items-start text-red-800 animate-fadeIn">
             <Icon name="alertTriangle" size={28} className="mt-0.5 flex-shrink-0" color="#ef4444" />
             <div className="ml-4">
               <h4 className="font-extrabold text-lg">EMERGENCY WARNING</h4>
@@ -852,7 +1070,7 @@ const PredictionPage = ({ db, userId, authReady, appId }) => {
           </div>
         )}
         {predictionResult && !isLoading && !predictionResult.error && (
-          <div className="space-y-4 animate-fadeInUp w-full">
+          <div className="space-y-4 animate-fadeInUp">
              <h3 className="text-2xl font-extrabold text-gray-900 mb-2 border-b border-gray-200 pb-3">AI Diagnostic Report</h3>
              <p className="text-xs text-amber-600 font-bold mb-4 bg-amber-50 p-2 rounded-lg border border-amber-200 inline-block">
                <Icon name="alertTriangle" size={12} className="inline mr-1" /> Educational information only. Consult qualified healthcare professionals for medical advice.
@@ -874,25 +1092,8 @@ const PredictionPage = ({ db, userId, authReady, appId }) => {
           </div>
         )}
         {predictionResult?.error && !isLoading && (
-          <div className="p-5 bg-rose-50 border border-rose-200 rounded-2xl text-rose-800 font-mono text-sm w-full">{predictionResult.error}</div>
+          <div className="p-5 bg-rose-50 border border-rose-200 rounded-2xl text-rose-800 font-mono text-sm">{predictionResult.error}</div>
         )}
-      </div>
-      
-      <div className="flex-shrink-0 p-4 bg-white/80 backdrop-blur-lg shadow-lg rounded-2xl border border-gray-200/50 mt-6 w-full animate-fadeInUp" style={{animationDelay: '0.2s'}}>
-        <h3 className="text-xl font-semibold text-blue-800 mb-4 flex items-center"><Icon name="history" size={20} className="mr-2 text-blue-500" />Recent History</h3>
-        {authReady ? (
-          <><p className="text-gray-500 text-xs mb-3">Last 5 checks:</p>
-            <div className="space-y-3 max-h-[200px] overflow-y-auto pr-2">
-              {history.length === 0 ? <p className="text-gray-400 italic text-sm">No recent checks found.</p> : history.map(item => (
-                  <div key={item.id} className="p-3 bg-gray-50/80 rounded-lg border border-gray-200 shadow-sm hover:shadow-md transition duration-200">
-                    <p className="text-xs font-semibold text-gray-800">{new Date(item.timestamp?.seconds * 1000).toLocaleString()}</p>
-                    <p className="text-sm text-gray-600 mt-1 truncate">Symptoms: {item.symptoms.join(', ')}</p>
-                    <p className="text-xs font-medium text-green-600 mt-1">Top Prediction: {item.result.predictions[0]?.disease || 'N/A'}</p>
-                  </div>
-                ))}
-            </div>
-          </>
-        ) : (<div className="text-center p-4 text-gray-500"><p>Authenticating Firebase...</p></div>)}
       </div>
     </div>
   );
@@ -915,20 +1116,6 @@ const DocBotPage = ({ db, userId, authReady, appId }) => {
     } catch (e) { console.error(e); }
   }, [db, userId, authReady, appId]);
 
-  const fetchWithBackoff = useCallback(async (url, options, retries = 3, delay = 1000) => {
-    for (let i = 0; i < retries; i++) {
-      try {
-        const response = await fetch(url, options);
-        if (response.ok) return response;
-        if (response.status === 429 && i < retries - 1) { await new Promise(res => setTimeout(res, delay)); delay *= 2; continue; }
-        throw new Error(`API status ${response.status}`);
-      } catch (error) {
-        if (i === retries - 1) throw error;
-        await new Promise(res => setTimeout(res, delay)); delay *= 2;
-      }
-    }
-  }, []);
-
   const handleSend = async (messageText) => {
     const message = (typeof messageText === 'string') ? messageText : currentMessage;
     if (!message.trim() || isTyping || !db || !userId || !appId) return;
@@ -943,7 +1130,7 @@ const DocBotPage = ({ db, userId, authReady, appId }) => {
       apiHistory.push({ role: 'user', parts: [{ text: userMessage }] });
       const payload = { contents: apiHistory, tools: [{ "google_search": {} }], systemInstruction: { parts: [{ text: CHAT_BOT_SYSTEM_INSTRUCTION }] } };
       
-      const res = await fetchWithBackoff(GEMINI_API_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+      const res = await fetch(GEMINI_API_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
       const result = await res.json();
       const aiText = result.candidates?.[0]?.content?.parts?.[0]?.text || "Sorry, error processing.";
       await setDoc(doc(colRef), { text: aiText, role: 'ai', timestamp: serverTimestamp() });
@@ -986,7 +1173,7 @@ const DocBotPage = ({ db, userId, authReady, appId }) => {
         <div className="p-4 bg-white border-t border-gray-100 flex-shrink-0">
           <div className="relative flex items-center">
             <input type="text" value={currentMessage} onChange={e => setCurrentMessage(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleSend()} disabled={isTyping || !authReady} placeholder="Type a health question..." className="w-full pl-5 pr-14 py-4 bg-gray-50 border border-gray-200 rounded-2xl focus:ring-2 focus:ring-blue-500 outline-none text-sm" />
-            <button onClick={() => handleSend()} disabled={isTyping || !currentMessage.trim() || !authReady} className="absolute right-2 p-2.5 bg-blue-600 text-white rounded-xl hover:bg-blue-700 disabled:opacity-50 shadow-sm transition"><Icon name="send" size={18} /></button>
+            <button onClick={() => handleSend()} disabled={isTyping || !currentMessage.trim() || !authReady} className="absolute right-2 p-2.5 bg-blue-600 text-white rounded-xl hover:bg-blue-700 disabled:opacity-50 shadow-sm"><Icon name="send" size={18} /></button>
           </div>
         </div>
       </div>
@@ -1026,11 +1213,11 @@ const ContactPage = () => {
         <h2 className="text-2xl font-extrabold text-gray-900 mb-2">Contact Support</h2>
         <p className="text-gray-500 mb-8">Need technical help or have a question about the platform?</p>
         <div className="space-y-4 max-w-xs mx-auto text-left">
-          <div className="p-4 bg-gray-50 rounded-xl border border-gray-100">
+          <div className="p-4 bg-gray-50 rounded-xl border border-gray-100 shadow-sm">
             <p className="font-bold text-gray-900">Dilip Kumar A N</p>
             <p className="text-sm text-gray-600">dilipkumaran.ec23@rvce.edu.in</p>
           </div>
-          <div className="p-4 bg-gray-50 rounded-xl border border-gray-100">
+          <div className="p-4 bg-gray-50 rounded-xl border border-gray-100 shadow-sm">
             <p className="font-bold text-gray-900">Arya B V</p>
             <p className="text-sm text-gray-600">aryabv.ec23@rvce.edu.in</p>
           </div>
@@ -1040,128 +1227,144 @@ const ContactPage = () => {
   );
 };
 
+// =================================================================================
+// --- MAIN APP COMPONENT (CONTROLS AUTH & ROUTING) ---
+// =================================================================================
+
 const App = () => {
+  const [db, setDb] = useState(null);
+  const [auth, setAuth] = useState(null);
+  
+  // Real Auth State
   const [userId, setUserId] = useState(null);
-  const [userRole, setUserRole] = useState(null); 
+  const [userRole, setUserRole] = useState(null); // 'patient', 'doctor', 'attender', 'admin'
+  const [userStatus, setUserStatus] = useState(null); // 'pending', 'approved'
   const [authReady, setAuthReady] = useState(false);
-  const [currentPage, setCurrentPage] = useState('home');
+  const [appId, setAppId] = useState(null);
+  const [currentPage, setCurrentPage] = useState('');
   const [initError, setInitError] = useState(null);
 
+  // 1. Initialize Firebase
   useEffect(() => {
     let isMounted = true;
-    
-    if (!auth || !db) {
-      if (isMounted) {
-        setInitError("Firebase configuration is missing or invalid. Check your environment variables.");
-        setAuthReady(true);
-      }
-      return;
-    }
+    try {
+      const firebaseConfigStr = getEnvVar('VITE_FIREBASE_CONFIG') || '{}';
+      if (firebaseConfigStr === '{}') return;
+      const firebaseConfig = JSON.parse(firebaseConfigStr);
+      if (!firebaseConfig.apiKey) return;
+      const newAppId = firebaseConfig.appId;
+      if (!newAppId) return;
 
-    const unsubscribe = onAuthStateChanged(auth, async (user) => {
-      if (!isMounted) return;
+      const fbApp = initializeApp(firebaseConfig);
+      const firestore = getFirestore(fbApp);
+      const firebaseAuth = getAuth(fbApp);
       
-      if (user) {
-        setUserId(user.uid);
-        
-        // Use onSnapshot for real-time role updates (critical for fixing the "pending" bug)
-        const profileRef = doc(db, 'artifacts', globalAppId, 'users', user.uid, 'profile', 'data');
-        const unsubProfile = onSnapshot(profileRef, (profileSnap) => {
-            if (profileSnap.exists()) {
-                const data = profileSnap.data();
-                setUserRole(data.role || 'patient');
-
-                if (data.status === 'pending') {
-                    setCurrentPage('pending');
-                } else {
-                    // Safe routing once approved
-                    if(data.role === 'doctor') setCurrentPage('doctor-home');
-                    else if(data.role === 'attender') setCurrentPage('attender-home');
-                    else if(data.role === 'admin') setCurrentPage('admin-home');
-                    else setCurrentPage('home');
-                }
-            } else {
-                setUserRole('patient');
-                setCurrentPage('home');
-            }
-            setAuthReady(true);
-        }, (error) => {
-            console.error("Profile Listener Error:", error);
-            setUserRole('patient');
-            setCurrentPage('home');
-            setAuthReady(true);
-        });
-        
-      } else {
-        setUserId(null);
-        setUserRole(null);
-        setCurrentPage('');
-        setAuthReady(true);
+      if (isMounted) {
+        setDb(firestore);
+        setAuth(firebaseAuth);
+        setAppId(newAppId);
       }
-    });
-    
-    return () => { isMounted = false; unsubscribe(); };
+      
+      // We don't use custom token sign in anymore for the real platform.
+    } catch (e) {
+      console.error("Initialization Failed:", e);
+      if (isMounted) setAuthReady(true);
+    }
+    return () => { isMounted = false; };
   }, []);
 
+  // 2. Auth State Listener
+  useEffect(() => {
+      if (!auth || !db || !appId) return;
+      
+      const unsubscribe = onAuthStateChanged(auth, (user) => {
+        if (user) {
+          setUserId(user.uid);
+          
+          // REALTIME LISTENER FOR PROFILE (Solves the "Admin approved me but UI didn't update" bug)
+          const profileRef = doc(db, 'artifacts', appId, 'users', user.uid, 'profile', 'data');
+          const unsubProfile = onSnapshot(profileRef, (snap) => {
+              if (snap.exists()) {
+                  const data = snap.data();
+                  setUserRole(data.role || 'patient');
+                  setUserStatus(data.status || 'approved');
+                  
+                  // Routing based on status and role
+                  if (data.status === 'pending') {
+                      setCurrentPage('pending');
+                  } else {
+                      if (currentPage === '' || currentPage === 'pending') {
+                          if (data.role === 'doctor') setCurrentPage('doctor-home');
+                          else if (data.role === 'attender') setCurrentPage('attender-home');
+                          else if (data.role === 'admin') setCurrentPage('admin-home');
+                          else setCurrentPage('home');
+                      }
+                  }
+              } else {
+                  setUserRole('patient');
+                  setUserStatus('approved');
+                  setCurrentPage('home');
+              }
+              setAuthReady(true);
+          });
+          return () => unsubProfile();
+
+        } else {
+          setUserId(null);
+          setUserRole(null);
+          setUserStatus(null);
+          setCurrentPage('');
+          setAuthReady(true);
+        }
+      });
+      return () => unsubscribe();
+  }, [auth, db, appId]);
+
+
+  // 3. Render Routing Logic
   const renderContent = () => {
-    if (initError) {
-      return (
-        <div className="h-full flex items-center justify-center p-8">
-          <div className="bg-red-50 border border-red-200 p-6 rounded-2xl max-w-lg w-full text-center">
-             <Icon name="alertTriangle" size={48} className="text-red-500 mx-auto mb-4" />
-             <h3 className="text-lg font-bold text-red-900 mb-2">Initialization Error</h3>
-             <p className="text-sm text-red-700">{initError}</p>
-          </div>
-        </div>
-      );
-    }
+    if (initError) return <div className="h-full flex items-center justify-center p-8"><div className="bg-red-50 border border-red-200 p-6 rounded-2xl max-w-lg w-full text-center"><Icon name="alertTriangle" size={48} className="text-red-500 mx-auto mb-4" /><h3 className="text-lg font-bold text-red-900 mb-2">Initialization Error</h3><p className="text-sm text-red-700">{initError}</p></div></div>;
+    if (!authReady) return <div className="h-full flex flex-col items-center justify-center"><span className="dot-flashing mb-4"></span><p className="text-gray-500 text-sm font-medium">Initializing Platform...</p></div>;
+    
+    // Unauthenticated
+    if (!userId) return <AuthScreen auth={auth} db={db} appId={appId} />;
+    
+    // Pending Approval Block
+    if (userStatus === 'pending') return <PendingApprovalScreen auth={auth} />;
 
-    if (!authReady) {
-      return (
-        <div className="h-full flex flex-col items-center justify-center">
-          <span className="dot-flashing mb-4"></span>
-          <p className="text-gray-500 text-sm font-medium">Initializing Platform...</p>
-        </div>
-      );
-    }
-
-    if (!userId) {
-      return <AuthScreen auth={auth} db={db} appId={globalAppId} />;
-    }
-
-    if (currentPage === 'pending') {
-        return <PendingApprovalScreen auth={auth} />;
-    }
-
-    const pageContainerClasses = "flex-grow w-full overflow-y-auto pt-16 relative z-10";
+    const pageClasses = "w-full pb-10"; // Added pb-10 to ensure footer doesn't overlap content
 
     switch (currentPage) {
+      // General
+      case 'profile': return <div className={pageClasses}><ProfilePage db={db} auth={auth} userId={userId} appId={appId} userRole={userRole}/></div>;
+      case 'contact': return <div className={pageClasses}><ContactPage /></div>;
+      
       // Patient Pages
-      case 'home': return <div className={pageContainerClasses}><HomePage onNavigate={setCurrentPage} /></div>;
-      case 'prediction': return <div className={pageContainerClasses}><PredictionPage db={db} userId={userId} authReady={authReady} appId={globalAppId} /></div>;
-      case 'docbot': return <div className={pageContainerClasses}><DocBotPage db={db} userId={userId} authReady={authReady} appId={globalAppId} /></div>;
-      case 'appointments': return <div className={pageContainerClasses}><PatientAppointments db={db} userId={userId} appId={globalAppId} userName={auth?.currentUser?.displayName} /></div>;
+      case 'home': return <div className={pageClasses}><HomePage onNavigate={setCurrentPage} /></div>;
+      case 'prediction': return <div className={pageContainerClasses}><PredictionPage db={db} userId={userId} authReady={authReady} appId={appId} /></div>;
+      case 'docbot': return <div className={pageContainerClasses}><DocBotPage db={db} userId={userId} authReady={authReady} appId={appId} /></div>;
       case 'hospitals': return <div className={pageContainerClasses}><HospitalPage /></div>;
-      case 'contact': return <div className={pageContainerClasses}><ContactPage /></div>;
+      case 'appointments': return <div className={pageClasses}><PatientAppointments db={db} userId={userId} appId={appId} userName={auth?.currentUser?.displayName} /></div>;
       
       // Doctor Page
-      case 'doctor-home': return <div className={pageContainerClasses}><DoctorDashboard db={db} appId={globalAppId} userId={userId} /></div>;
-      case 'doctor-history': return <div className={pageContainerClasses}><DoctorHistory db={db} appId={globalAppId} userId={userId} /></div>;
+      case 'doctor-home': return <div className={pageClasses}><DoctorDashboard db={db} appId={appId} userId={userId} /></div>;
+      case 'doctor-history': return <div className={pageClasses}><DoctorHistory db={db} appId={appId} userId={userId} /></div>;
       
       // Attender Page
-      case 'attender-home': return <div className={pageContainerClasses}><AttenderDashboard db={db} appId={globalAppId} userId={userId} /></div>;
-      case 'attender-history': return <div className={pageContainerClasses}><div className="p-8 text-center text-gray-500">Feature in development.</div></div>;
+      case 'attender-home': return <div className={pageClasses}><AttenderDashboard db={db} appId={appId} /></div>;
       
       // Admin Page
-      case 'admin-home': return <div className={pageContainerClasses}><AdminDashboard db={db} appId={globalAppId} /></div>;
-      case 'admin-history': return <div className={pageContainerClasses}><AdminHistory db={db} appId={globalAppId} /></div>;
+      case 'admin-home': return <div className={pageClasses}><AdminDashboard db={db} appId={appId} /></div>;
+      case 'admin-approvals': return <div className={pageClasses}><AdminApprovals db={db} appId={appId} /></div>;
+      case 'admin-users': return <div className={pageClasses}><AdminUsers db={db} appId={appId} /></div>;
+      case 'admin-history': return <div className={pageClasses}><AdminHistory db={db} appId={appId} /></div>;
       
-      default: return <div className={pageContainerClasses}><HomePage onNavigate={setCurrentPage} /></div>;
+      default: return <div className={pageClasses}><HomePage onNavigate={setCurrentPage} /></div>;
     }
   };
 
   return (
-    <div className="h-screen w-screen flex flex-col bg-gradient-to-br from-gray-50 to-blue-50/30 font-inter overflow-hidden">
+    <div className="h-screen w-screen flex flex-col bg-gray-50 font-inter overflow-hidden">
       <style>{`
         body { font-family: 'Inter', sans-serif; }
         .hide-scrollbar::-webkit-scrollbar { display: none; }
@@ -1177,20 +1380,16 @@ const App = () => {
         @keyframes dotFlashing { 0% { opacity: 0.2; } 50% { opacity: 1; } 100% { opacity: 0.2; } }
       `}</style>
       
-      {userId && currentPage !== 'pending' && (
-        <NavBar 
-          currentPage={currentPage} 
-          onNavigate={setCurrentPage} 
-          userRole={userRole}
-          auth={auth} 
-          db={db}
-          userId={userId}
-          appId={globalAppId}
-        />
+      {userId && userStatus === 'approved' && (
+        <NavBar currentPage={currentPage} onNavigate={setCurrentPage} userRole={userRole} auth={auth} db={db} userId={userId} appId={appId} />
       )}
       
-      {renderContent()}
+      {/* Scrollable Main Content. pt-16 for navbar offset if approved */}
+      <main className={`flex-grow overflow-y-auto relative z-10 w-full ${userId && userStatus === 'approved' ? 'pt-16' : ''}`}>
+        {renderContent()}
+      </main>
       
+      {/* Static Footer */}
       <Footer className="flex-shrink-0 z-20 bg-white" />
     </div>
   );
