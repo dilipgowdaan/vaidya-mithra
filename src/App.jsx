@@ -190,7 +190,12 @@ const AuthScreen = ({ auth, db, appId }) => {
       }
     } catch (err) {
       console.error("Auth Error:", err);
-      setError(err.message.replace("Firebase: ", ""));
+      // Catch specific operation-not-allowed error for clearer feedback
+      if (err.code === 'auth/operation-not-allowed') {
+        setError("Email/Password auth is disabled. Please enable 'Email/Password' in your Firebase Console under Authentication > Sign-in method.");
+      } else {
+        setError(err.message.replace("Firebase: ", ""));
+      }
     } finally {
       setLoading(false);
     }
