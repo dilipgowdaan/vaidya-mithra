@@ -456,8 +456,8 @@ const StatCard = ({ title, value, icon, colorClass }) => (
   </div>
 );
 
-// --- ADMIN DASHBOARDS ---
 
+// --- ADMIN DASHBOARDS ---
 const AdminDashboard = ({ db, appId }) => {
   const [stats, setStats] = useState({ patients: 0, doctors: 0, attenders: 0, total: 0 });
   
@@ -608,8 +608,8 @@ const AdminHistory = ({ db, appId }) => {
   );
 };
 
-// --- ATTENDER DASHBOARDS ---
 
+// --- ATTENDER DASHBOARDS ---
 const AttenderDashboard = ({ db, appId }) => {
   const [appointments, setAppointments] = useState([]);
   const [doctors, setDoctors] = useState([]);
@@ -721,7 +721,6 @@ const AttenderDashboard = ({ db, appId }) => {
 };
 
 // --- DOCTOR DASHBOARDS ---
-
 const DoctorDashboard = ({ db, appId, userId }) => {
   const [appointments, setAppointments] = useState([]);
   const [consultModal, setConsultModal] = useState(null);
@@ -819,10 +818,7 @@ const DoctorHistory = ({ db, appId, userId }) => {
 };
 
 
-// =================================================================================
 // --- PATIENT COMPONENTS (ORIGINAL FEATURES) ---
-// =================================================================================
-
 const PatientAppointments = ({ db, userId, appId, userName }) => {
   const [appointments, setAppointments] = useState([]);
   const [isBooking, setIsBooking] = useState(false);
@@ -1096,15 +1092,14 @@ const ContactPage = () => {
   );
 };
 
-
 // =================================================================================
 // --- MAIN APP COMPONENT (CONTROLS AUTH & ROUTING) ---
 // =================================================================================
 
 const App = () => {
   const [userId, setUserId] = useState(null);
-  const [userRole, setUserRole] = useState(null); // 'patient', 'doctor', 'attender', 'admin'
-  const [userStatus, setUserStatus] = useState(null); // 'approved', 'pending'
+  const [userRole, setUserRole] = useState(null); 
+  const [userStatus, setUserStatus] = useState(null); 
   const [authReady, setAuthReady] = useState(false);
   const [currentPage, setCurrentPage] = useState('');
   const [initError, setInitError] = useState(null);
@@ -1113,11 +1108,16 @@ const App = () => {
     let isMounted = true;
     if (!auth || !db) { if (isMounted) { setInitError("Firebase configuration is missing or invalid. Check your environment variables."); setAuthReady(true); } return; }
 
+    const attemptAuth = async () => {
+      try { if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) await signInWithCustomToken(auth, __initial_auth_token); } 
+      catch (e) { console.error("Custom token auth failed:", e); }
+    };
+    attemptAuth();
+
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
       if (!isMounted) return;
       if (user) {
         setUserId(user.uid);
-        // Realtime Profile Listener for immediate status updates
         const profileRef = doc(db, 'artifacts', globalAppId, 'users', user.uid, 'profile', 'data');
         const unsubProfile = onSnapshot(profileRef, (snap) => {
             if (snap.exists()) {
@@ -1142,7 +1142,7 @@ const App = () => {
       }
     });
     return () => { isMounted = false; unsubscribe(); };
-  }, [currentPage]);
+  }, []);
 
   const renderContent = () => {
     if (initError) return <div className="h-full flex items-center justify-center p-8"><div className="bg-red-50 border border-red-200 p-6 rounded-2xl max-w-lg w-full text-center"><Icon name="alertTriangle" size={48} className="text-red-500 mx-auto mb-4" /><h3 className="text-lg font-bold text-red-900 mb-2">Initialization Error</h3><p className="text-sm text-red-700">{initError}</p></div></div>;
@@ -1150,7 +1150,7 @@ const App = () => {
     if (!userId) return <AuthScreen auth={auth} db={db} appId={globalAppId} />;
     if (userStatus === 'pending') return <PendingApprovalScreen auth={auth} />;
 
-    const pageContainerClasses = "w-full pb-10"; // Ensures no overlap with footer
+    const pageContainerClasses = "w-full pb-10";
 
     switch (currentPage) {
       case 'profile': return <div className={pageContainerClasses}><ProfilePage db={db} auth={auth} userId={userId} appId={globalAppId} userRole={userRole}/></div>;
