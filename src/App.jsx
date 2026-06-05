@@ -31,7 +31,7 @@ const getEnvVar = (key) => {
 const apiKey = getEnvVar('VITE_VAIDYA_MITHRA_GEMINI_KEY') || "";
 const GEMINI_API_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
 
-// Global Firebase Setup
+// Global Firebase Setup (Ensures it only initializes once)
 let app, auth, db, globalAppId;
 try {
   const fbConfigStr = typeof __firebase_config !== 'undefined' ? __firebase_config : getEnvVar('VITE_FIREBASE_CONFIG');
@@ -144,7 +144,7 @@ const AuthScreen = ({ auth, db, appId }) => {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [name, setName] = useState('');
-  const [role, setRole] = useState('patient'); 
+  const [role, setRole] = useState('patient'); // patient, doctor, attender
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
@@ -183,6 +183,7 @@ const AuthScreen = ({ auth, db, appId }) => {
         const user = userCredential.user;
         await updateProfile(user, { displayName: name });
         
+        // Attenders and Doctors start as pending. Patients are instantly approved.
         const status = role === 'patient' ? 'approved' : 'pending';
         
         await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'profile', 'data'), {
@@ -190,7 +191,7 @@ const AuthScreen = ({ auth, db, appId }) => {
         });
 
         if (status === 'pending') {
-          // Write to pending queue
+          // Write to a separate collection for easy admin querying
           await setDoc(doc(db, 'artifacts', appId, 'pending_users', user.uid), {
             uid: user.uid, email: user.email, name, role, status: 'pending', createdAt: serverTimestamp()
           });
@@ -276,6 +277,7 @@ const NavBar = ({ currentPage, onNavigate, userRole, auth, db, userId, appId }) 
     const [notifications, setNotifications] = useState([]);
     const [showNotifMenu, setShowNotifMenu] = useState(false);
 
+    // Fetch notifications ONLY for patients
     useEffect(() => {
         if (!userId || !db || !appId || userRole !== 'patient') return;
         const q = query(collection(db, `artifacts/${appId}/users/${userId}/notifications`), orderBy('timestamp', 'desc'), limit(10));
@@ -374,7 +376,7 @@ const NavBar = ({ currentPage, onNavigate, userRole, auth, db, userId, appId }) 
 };
 
 const StatCard = ({ title, value, icon, colorClass }) => (
-  <div className="bg-white/80 backdrop-blur-lg rounded-2xl p-6 border border-gray-200/50 shadow-sm">
+  <div className="bg-white/80 backdrop-blur-lg rounded-2xl p-6 border border-gray-200/50 shadow-sm hover:shadow-md transition-shadow">
     <div className="flex justify-between items-start">
       <div><p className="text-sm font-medium text-gray-500 mb-1">{title}</p><h3 className="text-3xl font-extrabold text-gray-900">{value}</h3></div>
       <div className={`p-3 rounded-xl ${colorClass}`}><Icon name={icon} size={24} /></div>
@@ -387,11 +389,10 @@ const AppointmentBadge = ({ status }) => {
     return <span className={`px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wide ${styles[status]}`}>{status}</span>;
 };
 
-// --- ADMIN PAGES ---
 const AdminDashboard = ({ db, appId }) => {
     const [pendingUsers, setPendingUsers] = useState([]);
     useEffect(() => {
-        // Simple query without orderBy to avoid index errors on new projects
+        // Querying all pending and sorting client-side to avoid Index requirement
         const q = query(collection(db, `artifacts/${appId}/pending_users`));
         return onSnapshot(q, (snap) => {
             const users = snap.docs.map(d => ({id: d.id, ...d.data()}));
@@ -401,7 +402,10 @@ const AdminDashboard = ({ db, appId }) => {
 
     const handleApprove = async (user) => {
         await updateDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'profile', 'data'), { status: 'approved' });
-        if (user.role === 'doctor') await setDoc(doc(db, 'artifacts', appId, 'approved_doctors', user.uid), { uid: user.uid, name: user.name });
+        // If doctor, add to global doctor list for scheduling
+        if (user.role === 'doctor') {
+            await setDoc(doc(db, 'artifacts', appId, 'approved_doctors', user.uid), { uid: user.uid, name: user.name });
+        }
         await deleteDoc(doc(db, 'artifacts', appId, 'pending_users', user.uid));
     };
 
@@ -452,8 +456,7 @@ const AdminHistory = ({ db, appId }) => {
     );
 };
 
-// --- ATTENDER PAGES ---
-const AttenderDashboard = ({ db, appId, userId }) => {
+const AttenderDashboard = ({ db, appId }) => {
     const [appointments, setAppointments] = useState([]);
     const [doctors, setDoctors] = useState([]);
     const [scheduleModal, setScheduleModal] = useState(null); 
@@ -472,6 +475,7 @@ const AttenderDashboard = ({ db, appId, userId }) => {
         const docId = e.target.doctorId.value;
         const doctorName = doctors.find(d => d.uid === docId)?.name || 'Doctor';
         await updateDoc(doc(db, `artifacts/${appId}/appointments`, scheduleModal.id), { status: 'scheduled', doctorId: docId, doctorName, date: e.target.date.value, time: e.target.time.value });
+        // Send notification to patient
         await setDoc(doc(collection(db, `artifacts/${appId}/users/${scheduleModal.patientId}/notifications`)), { message: `Your appointment is scheduled with ${doctorName} on ${e.target.date.value} at ${e.target.time.value}.`, timestamp: serverTimestamp(), read: false });
         setScheduleModal(null);
     };
@@ -486,6 +490,7 @@ const AttenderDashboard = ({ db, appId, userId }) => {
         <div className="p-4 sm:p-8 max-w-7xl mx-auto h-full animate-fadeInUp">
             <h1 className="text-3xl font-extrabold text-gray-900 mb-6">Attender Triage Hub</h1>
             <div className="grid gap-6">
+                {/* Pending Requests */}
                 <div>
                     <h3 className="font-bold text-lg text-blue-800 mb-3 border-b pb-2">New Requests (Needs Scheduling)</h3>
                     <div className="space-y-3">
@@ -498,6 +503,7 @@ const AttenderDashboard = ({ db, appId, userId }) => {
                     </div>
                 </div>
                 
+                {/* Scheduled (Needs Vitals) */}
                 <div>
                     <h3 className="font-bold text-lg text-purple-800 mb-3 border-b pb-2 mt-4">Scheduled Arrivals (Needs Vitals)</h3>
                     <div className="space-y-3">
@@ -547,7 +553,6 @@ const AttenderDashboard = ({ db, appId, userId }) => {
     );
 };
 
-// --- DOCTOR PAGES ---
 const DoctorDashboard = ({ db, appId, userId }) => {
     const [appointments, setAppointments] = useState([]);
     const [consultModal, setConsultModal] = useState(null);
@@ -656,7 +661,6 @@ const DoctorHistory = ({ db, appId, userId }) => {
     );
 };
 
-// --- PATIENT APPOINTMENTS ---
 const PatientAppointments = ({ db, userId, appId, userName }) => {
     const [appointments, setAppointments] = useState([]);
     const [isBooking, setIsBooking] = useState(false);
@@ -770,19 +774,14 @@ const PredictionPage = ({ db, userId, authReady, appId }) => {
       const payload = { contents: [{ parts: [{ text: userQuery }] }], generationConfig: { responseMimeType: "application/json", responseSchema: JSON_SCHEMA } };
       const response = await fetchWithBackoff(GEMINI_API_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
       const result = await response.json();
-      const jsonString = result.candidates?.[0]?.content?.parts?.[0]?.text;
-      if (!jsonString) throw new Error("Invalid response.");
-      const parsedResult = JSON.parse(jsonString);
+      const parsedResult = JSON.parse(result.candidates?.[0]?.content?.parts?.[0]?.text);
       setPredictionResult(parsedResult);
       
       if (db && userId && appId) {
-        // Save to user's history
         await setDoc(doc(collection(db, `artifacts/${appId}/users/${userId}/symptom_history`)), { symptoms: selectedSymptoms, age, gender, result: parsedResult, timestamp: serverTimestamp() });
-        // Save to Global Log for Admin
-        await setDoc(doc(collection(db, `artifacts/${appId}/global_ai_logs`)), { userId, age, gender, symptoms: selectedSymptoms, topPrediction: parsedResult.predictions[0]?.disease || 'N/A', emergency: parsedResult.emergency_flag, timestamp: serverTimestamp() });
       }
     } catch (error) {
-      setPredictionResult({ error: `Analysis failed. Check API configuration.` });
+      setPredictionResult({ error: `Could not retrieve prediction. Error: ${error.message}` });
     } finally {
       setIsLoading(false);
     }
@@ -826,7 +825,7 @@ const PredictionPage = ({ db, userId, authReady, appId }) => {
           <div className="flex-grow flex flex-wrap content-start gap-2 bg-gray-50 rounded-xl p-4 border border-dashed border-gray-300 overflow-y-auto min-h-[150px] max-h-[250px]">
             {selectedSymptoms.length === 0 ? <p className="text-gray-400 italic m-auto text-sm">Start selecting symptoms...</p> : 
               selectedSymptoms.map(symptom => (
-                <div key={symptom} className="flex h-fit items-center bg-blue-100 text-blue-800 text-xs font-bold px-3 py-1.5 rounded-full shadow-sm transform transition-all duration-200 hover:scale-105">
+                <div key={symptom} className="flex h-fit items-center bg-blue-100 text-blue-800 text-xs font-bold px-3 py-1.5 rounded-full shadow-sm">
                   {symptom} <button onClick={() => toggleSymptom(symptom)} className="ml-2 text-blue-600 hover:text-red-500 transition"><Icon name="x" size={14} /></button>
                 </div>
               ))
@@ -1048,7 +1047,6 @@ const App = () => {
   const [currentPage, setCurrentPage] = useState('home');
   const [initError, setInitError] = useState(null);
 
-  // Use the global objects securely initialized at the top of the file
   useEffect(() => {
     let isMounted = true;
     
@@ -1060,14 +1058,13 @@ const App = () => {
       return;
     }
 
-    // Listener for Auth and Role changes
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
       if (!isMounted) return;
       
       if (user) {
         setUserId(user.uid);
         
-        // Setting up a real-time listener on the user's profile to catch immediate Admin approvals
+        // Use onSnapshot for real-time role updates (critical for fixing the "pending" bug)
         const profileRef = doc(db, 'artifacts', globalAppId, 'users', user.uid, 'profile', 'data');
         const unsubProfile = onSnapshot(profileRef, (profileSnap) => {
             if (profileSnap.exists()) {
@@ -1095,8 +1092,6 @@ const App = () => {
             setAuthReady(true);
         });
         
-        // We do not cleanup unsubProfile here as it needs to stay active for the session. 
-        // A full production app would manage this cleanup on unmount.
       } else {
         setUserId(null);
         setUserRole(null);
