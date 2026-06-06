@@ -1286,29 +1286,34 @@ const AuthPage = ({ firebaseError, onLogin, onSignup }) => {
   };
 
   return (
-    <div className="grid min-h-screen bg-gradient-to-br from-blue-50 via-white to-green-50 px-4 py-8 lg:grid-cols-[1.1fr_0.9fr]">
-      <div className="mx-auto flex w-full max-w-4xl flex-col justify-center py-8">
-        <Logo />
-        <div className="mt-10 max-w-2xl">
-          <Badge status="approved">Enterprise HMIS</Badge>
-          <h1 className="mt-5 text-4xl font-extrabold tracking-tight text-gray-950 sm:text-5xl">
-            Role-based care coordination for Vaidya Mithra.
-          </h1>
-          <p className="mt-5 text-base leading-7 text-gray-600">
-            Patients can request consults, attenders can schedule and record
-            vitals, doctors can complete consultations, and admins can approve
-            staff and monitor the full system history.
-          </p>
-          <div className="mt-8 grid max-w-2xl gap-3 sm:grid-cols-3">
-            <StatCard label="RBAC" value="4 roles" icon="users" tone="blue" />
-            <StatCard label="Flow" value="Live" icon="activity" tone="green" />
-            <StatCard label="Triage" value="AI" icon="stethoscope" tone="purple" />
+    <div className="grid min-h-screen bg-gradient-to-br from-blue-50 via-white to-green-50 px-4 py-8 lg:grid-cols-[0.95fr_1.05fr]">
+      <div className="mx-auto hidden w-full max-w-3xl flex-col justify-center py-8 lg:flex">
+        <div className="relative max-w-lg overflow-hidden rounded-lg border border-gray-200 bg-white/70 p-8 shadow-xl shadow-blue-100/60 backdrop-blur">
+          <div className="absolute inset-x-0 top-0 h-1 bg-gradient-to-r from-blue-700 via-cyan-500 to-emerald-500" />
+          <Logo />
+          <div className="mt-12">
+            <p className="text-xs font-bold uppercase tracking-wide text-blue-700">
+              Secure access
+            </p>
+            <h1 className="mt-3 text-3xl font-extrabold text-gray-950">
+              Vaidya Mithra HMIS
+            </h1>
+            <p className="mt-3 max-w-sm text-sm leading-6 text-gray-600">
+              Sign in to continue to your hospital workspace.
+            </p>
+          </div>
+          <div className="mt-10 flex items-center gap-3 rounded-lg border border-gray-200 bg-blue-50/80 p-4 text-sm font-semibold text-blue-900">
+            <Icon name="checkCircle" size={20} />
+            <span>Authorized hospital access</span>
           </div>
         </div>
       </div>
 
       <div className="mx-auto flex w-full max-w-md items-center">
         <Card className="w-full p-6">
+          <div className="mb-6 flex justify-center lg:hidden">
+            <Logo />
+          </div>
           <div className="mb-6 flex rounded-lg bg-gray-100 p-1">
             <button
               type="button"
