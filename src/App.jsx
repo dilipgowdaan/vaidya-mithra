@@ -508,81 +508,91 @@ const writeNotification = async (db, appId, userId, payload) => {
   }
 };
 
-const formatIndianSmsNumber = (value) => {
-  const digits = String(value || "").replace(/\D/g, "");
-  if (digits.length === 10) return digits;
-  if (digits.length === 12 && digits.startsWith("91")) return digits.slice(2);
-  return "";
+const isValidEmailAddress = (value) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(value || ""));
+
+const maskEmail = (value) => {
+  const email = normalizeEmail(value);
+  const [name, domain] = email.split("@");
+  if (!name || !domain) return email;
+  return `${name.slice(0, 2)}***@${domain}`;
 };
 
-const maskPhone = (value) => {
-  const digits = String(value || "").replace(/\D/g, "");
-  if (!digits) return "";
-  return `******${digits.slice(-4)}`;
+const cleanEmailText = (value, fallback) =>
+  String(value || fallback || "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+const getScheduleEmailVariables = (details) => ({
+  patientName: cleanEmailText(details.patientName, "Patient"),
+  queueToken: cleanEmailText(details.queueToken, "Appointment"),
+  scheduledDate: cleanEmailText(details.scheduledDate, "Date pending"),
+  scheduledTime: cleanEmailText(details.scheduledTime, "Time pending"),
+  doctorName: cleanEmailText(details.doctorName, "Doctor"),
+});
+
+const buildScheduleEmailMessage = (details) => {
+  const variables = getScheduleEmailVariables(details);
+  return `Hi ${variables.patientName},\n\nYour Vaidya Mithra appointment ${variables.queueToken} is scheduled on ${variables.scheduledDate} at ${variables.scheduledTime} with ${variables.doctorName}.\n\nThank you,\nVaidya Mithra`;
 };
 
-const buildScheduleSmsMessage = ({ patientName, queueToken, scheduledDate, scheduledTime, doctorName }) =>
-  `Hi, ${patientName || "Patient"}, ${queueToken || "your appointment"} is scheduled on ${scheduledDate} at ${scheduledTime} with ${doctorName}.`;
+const sendScheduledAppointmentEmail = async (patientEmail, scheduleDetails) => {
+  const toEmail = normalizeEmail(patientEmail);
+  const serviceId = env.VITE_EMAILJS_SERVICE_ID || "";
+  const templateId = env.VITE_EMAILJS_TEMPLATE_ID || "";
+  const publicKey = env.VITE_EMAILJS_PUBLIC_KEY || env.VITE_EMAILJS_USER_ID || "";
+  const fromName = env.VITE_EMAIL_FROM_NAME || "Vaidya Mithra";
+  const variables = getScheduleEmailVariables(scheduleDetails);
+  const message = buildScheduleEmailMessage(scheduleDetails);
 
-const sendScheduledAppointmentSms = async (patientPhone, scheduleDetails) => {
-  const to = formatIndianSmsNumber(patientPhone);
-  const apiKey = env.VITE_TWO_FACTOR_API_KEY || "";
-  const senderId = env.VITE_TWO_FACTOR_SENDER_ID || "Vaidya";
-  const scheduleMessage = buildScheduleSmsMessage(scheduleDetails);
-
-  if (!to || !scheduleMessage) {
-    return { sent: false, phone: to, reason: "Missing phone number or message." };
+  if (!toEmail || !isValidEmailAddress(toEmail)) {
+    return { sent: false, email: toEmail, reason: "Patient email is missing or invalid." };
   }
 
-  if (!apiKey) {
-    return { sent: false, phone: to, reason: "VITE_TWO_FACTOR_API_KEY is not configured." };
+  if (!serviceId || !templateId || !publicKey) {
+    return {
+      sent: false,
+      email: toEmail,
+      reason:
+        "EmailJS is not configured. Set VITE_EMAILJS_SERVICE_ID, VITE_EMAILJS_TEMPLATE_ID, and VITE_EMAILJS_PUBLIC_KEY in Vercel.",
+    };
   }
 
   try {
-    const body = new URLSearchParams({
-      From: senderId,
-      To: to,
-      TemplateName: "Schedule",
-      VAR1: scheduleDetails.patientName || "Patient",
-      VAR2: scheduleDetails.queueToken || "your appointment",
-      VAR3: scheduleDetails.scheduledDate || "",
-      VAR4: scheduleDetails.scheduledTime || "",
-      VAR5: scheduleDetails.doctorName || "",
+    const response = await fetch("https://api.emailjs.com/api/v1.0/email/send", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        service_id: serviceId,
+        template_id: templateId,
+        user_id: publicKey,
+        template_params: {
+          to_email: toEmail,
+          to_name: variables.patientName,
+          patient_name: variables.patientName,
+          queue_token: variables.queueToken,
+          scheduled_date: variables.scheduledDate,
+          scheduled_time: variables.scheduledTime,
+          doctor_name: variables.doctorName,
+          from_name: fromName,
+          subject: `Appointment scheduled: ${variables.queueToken}`,
+          message,
+        },
+      }),
     });
-    const response = await fetch(
-      `https://2factor.in/API/V1/${apiKey}/ADDON_SERVICES/SEND/TSMS`,
-      {
-        method: "POST",
-        body,
-      }
-    );
-    const responseText = await response.text();
-    let providerResponse = {};
-    try {
-      providerResponse = JSON.parse(responseText);
-    } catch (error) {
-      providerResponse = { raw: responseText };
-    }
-    const providerStatus = String(
-      providerResponse.Status || providerResponse.status || ""
-    ).toLowerCase();
-    const failed =
-      !response.ok || ["error", "failed", "failure"].includes(providerStatus);
 
-    return {
-      sent: !failed,
-      phone: to,
-      providerResponse,
-      reason: failed
-        ? providerResponse.Details ||
-          providerResponse.Message ||
-          providerResponse.raw ||
-          `2Factor returned HTTP ${response.status}.`
-        : "",
-    };
+    const responseText = await response.text();
+    if (!response.ok) {
+      return {
+        sent: false,
+        email: toEmail,
+        reason: responseText || `EmailJS returned HTTP ${response.status}.`,
+      };
+    }
+
+    return { sent: true, email: toEmail, reason: "" };
   } catch (error) {
-    warnOptionalFirestoreFailure("Scheduled SMS", error);
-    return { sent: false, phone: to, reason: error.message || "2Factor request failed." };
+    warnOptionalFirestoreFailure("Scheduled email", error);
+    return { sent: false, email: toEmail, reason: error.message || "Email request failed." };
   }
 };
 
@@ -1432,7 +1442,6 @@ const AuthPage = ({ firebaseError, onLogin, onSignup }) => {
               <div className="grid gap-4 sm:grid-cols-2">
                 <Field label="Phone number">
                   <Input
-                    required={form.role === "patient"}
                     value={form.phone}
                     onChange={(event) => update("phone", event.target.value)}
                     placeholder="+91..."
@@ -2344,8 +2353,8 @@ const AttenderDashboard = ({ db, appId, profile }) => {
   const [queueSearch, setQueueSearch] = useState("");
   const [queueDate, setQueueDate] = useState("");
   const [busyId, setBusyId] = useState("");
-  const [smsNotice, setSmsNotice] = useState(null);
-  const [smsResultsByAppointment, setSmsResultsByAppointment] = useState({});
+  const [emailNotice, setEmailNotice] = useState(null);
+  const [emailResultsByAppointment, setEmailResultsByAppointment] = useState({});
   const approvedDoctors = users
     .filter((user) => user.role === "doctor" && user.status === "approved")
     .sort((a, b) => String(a.name).localeCompare(String(b.name)));
@@ -2385,7 +2394,7 @@ const AttenderDashboard = ({ db, appId, profile }) => {
     if (!form.date || !form.time || !doctor || !availableSlots.includes(form.time)) return;
 
     setBusyId(appointment.id);
-    setSmsNotice(null);
+    setEmailNotice(null);
     try {
       const tokenAssignments = buildDailyQueueAssignments(
         appointments,
@@ -2406,7 +2415,6 @@ const AttenderDashboard = ({ db, appId, profile }) => {
         scheduledTime: form.time,
         doctorName: doctor.name,
       };
-      const scheduleMessage = buildScheduleSmsMessage(scheduleDetails);
 
       await updateDoc(doc(db, "artifacts", appId, "appointments", appointment.id), {
         status: "scheduled",
@@ -2440,33 +2448,35 @@ const AttenderDashboard = ({ db, appId, profile }) => {
         message: notificationMessage,
         appointmentId: appointment.id,
       });
-      setSmsResultsByAppointment((state) => ({
+      setEmailResultsByAppointment((state) => ({
         ...state,
         [appointment.id]: { status: "pending", to: "", reason: "" },
       }));
-      const smsResult = await sendScheduledAppointmentSms(patient?.phone || "", scheduleDetails);
-      const nextSmsStatus = smsResult.sent ? "sent" : "failed";
-      setSmsResultsByAppointment((state) => ({
+      const emailResult = await sendScheduledAppointmentEmail(
+        patient?.email || appointment.patientEmail || "",
+        scheduleDetails
+      );
+      const nextEmailStatus = emailResult.sent ? "sent" : "failed";
+      setEmailResultsByAppointment((state) => ({
         ...state,
         [appointment.id]: {
-          status: nextSmsStatus,
-          to: maskPhone(smsResult.phone),
-          reason: smsResult.reason || "",
+          status: nextEmailStatus,
+          to: maskEmail(emailResult.email),
+          reason: emailResult.reason || "",
         },
       }));
       await updateDoc(doc(db, "artifacts", appId, "appointments", appointment.id), {
-        smsStatus: nextSmsStatus,
-        smsTo: maskPhone(smsResult.phone),
-        smsReason: smsResult.reason || "",
-        smsTemplateName: "Schedule",
-        smsUpdatedAt: serverTimestamp(),
-        smsUpdatedAtClient: new Date().toISOString(),
+        emailStatus: nextEmailStatus,
+        emailTo: maskEmail(emailResult.email),
+        emailReason: emailResult.reason || "",
+        emailUpdatedAt: serverTimestamp(),
+        emailUpdatedAtClient: new Date().toISOString(),
       });
-      if (!smsResult.sent) {
-        setSmsNotice({
+      if (!emailResult.sent) {
+        setEmailNotice({
           type: "error",
-          text: `Appointment scheduled, but SMS was not sent. ${
-            smsResult.reason || "Check the 2Factor API key, sender ID, and browser console."
+          text: `Appointment scheduled, but email was not sent. ${
+            emailResult.reason || "Check the EmailJS keys, template, and browser console."
           }`,
         });
       }
@@ -2476,9 +2486,9 @@ const AttenderDashboard = ({ db, appId, profile }) => {
         doctorName: doctor.name,
         scheduledDate: form.date,
         scheduledTime: form.time,
-        smsSent: smsResult.sent,
-        smsTo: maskPhone(smsResult.phone),
-        smsReason: smsResult.reason || "",
+        emailSent: emailResult.sent,
+        emailTo: maskEmail(emailResult.email),
+        emailReason: emailResult.reason || "",
         dailyTokenRebalanced: tokenAssignments.length,
       });
     } finally {
@@ -2583,15 +2593,15 @@ const AttenderDashboard = ({ db, appId, profile }) => {
         </Card>
       </div>
 
-      {smsNotice ? (
+      {emailNotice ? (
         <div
           className={`mb-6 rounded-lg border p-3 text-sm font-semibold ${
-            smsNotice.type === "success"
+            emailNotice.type === "success"
               ? "border-green-200 bg-green-50 text-green-800"
               : "border-amber-200 bg-amber-50 text-amber-800"
           }`}
         >
-          {smsNotice.text}
+          {emailNotice.text}
         </div>
       ) : null}
 
@@ -2712,10 +2722,10 @@ const AttenderDashboard = ({ db, appId, profile }) => {
             ) : (
               scheduled.map((item) => {
                 const form = vitalForms[item.id] || {};
-                const localSmsResult = smsResultsByAppointment[item.id] || {};
-                const smsStatus = localSmsResult.status || item.smsStatus || "pending";
-                const smsTo = localSmsResult.to || item.smsTo || "";
-                const smsReason = localSmsResult.reason || item.smsReason || "";
+                const localEmailResult = emailResultsByAppointment[item.id] || {};
+                const emailStatus = localEmailResult.status || item.emailStatus || "pending";
+                const emailTo = localEmailResult.to || item.emailTo || "";
+                const emailReason = localEmailResult.reason || item.emailReason || "";
                 return (
                   <div key={item.id} className="rounded-lg border border-gray-200 p-4">
                     <div className="flex flex-wrap justify-between gap-3">
@@ -2731,28 +2741,28 @@ const AttenderDashboard = ({ db, appId, profile }) => {
                         <div className="mt-2 flex flex-wrap items-center gap-2">
                           <span
                             className={`rounded-lg border px-2.5 py-1 text-xs font-bold ${
-                              smsStatus === "sent"
+                              emailStatus === "sent"
                                 ? "border-green-200 bg-green-50 text-green-800"
-                                : smsStatus === "failed"
+                                : emailStatus === "failed"
                                   ? "border-red-200 bg-red-50 text-red-800"
                                   : "border-gray-200 bg-gray-50 text-gray-700"
                             }`}
                           >
-                            {smsStatus === "sent"
-                              ? "SMS Sent"
-                              : smsStatus === "failed"
-                                ? "SMS not sent"
-                                : "SMS pending"}
+                            {emailStatus === "sent"
+                              ? "Email Sent"
+                              : emailStatus === "failed"
+                                ? "Email not sent"
+                                : "Email pending"}
                           </span>
-                          {smsTo ? (
+                          {emailTo ? (
                             <span className="text-xs font-semibold text-gray-500">
-                              {smsTo}
+                              {emailTo}
                             </span>
                           ) : null}
                         </div>
-                        {smsStatus === "failed" && smsReason ? (
+                        {emailStatus === "failed" && emailReason ? (
                           <p className="mt-2 text-xs font-semibold text-red-700">
-                            {smsReason}
+                            {emailReason}
                           </p>
                         ) : null}
                       </div>
@@ -4159,9 +4169,6 @@ const MissingProfileSetupPage = ({ db, appId, user, onComplete, onLogout }) => {
         await updateProfile(user, { displayName: form.name }).catch(() => {});
       }
       const status = form.role === "patient" ? "approved" : "pending";
-      if (form.role === "patient" && !formatIndianSmsNumber(form.phone)) {
-        throw new Error("Patients need a valid 10-digit phone number for SMS updates.");
-      }
       const profile = await ensureGlobalProfile(db, appId, user, {
         ...form,
         status,
@@ -4205,7 +4212,6 @@ const MissingProfileSetupPage = ({ db, appId, user, onComplete, onLogout }) => {
           <div className="grid gap-4 sm:grid-cols-2">
             <Field label="Phone number">
               <Input
-                required={form.role === "patient"}
                 value={form.phone}
                 onChange={(event) => update("phone", event.target.value)}
                 placeholder="+91..."
@@ -4508,9 +4514,6 @@ const App = () => {
 
     const role = form.role || "patient";
     const status = role === "patient" ? "approved" : "pending";
-    if (role === "patient" && !formatIndianSmsNumber(form.phone)) {
-      throw new Error("Patients need a valid 10-digit phone number for SMS updates.");
-    }
     const credential = await createUserWithEmailAndPassword(
       auth,
       normalizeEmail(form.email),
