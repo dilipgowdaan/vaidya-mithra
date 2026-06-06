@@ -545,6 +545,7 @@ const sendScheduledAppointmentSms = async (patientPhone, scheduleMessage) => {
         body: JSON.stringify({
           From: senderId,
           To: to,
+          TemplateName: "Schedule",
           Msg: scheduleMessage,
         }),
       }
@@ -2432,14 +2433,22 @@ const AttenderDashboard = ({ db, appId, profile }) => {
         appointmentId: appointment.id,
       });
       const smsResult = await sendScheduledAppointmentSms(patient?.phone || "", scheduleMessage);
-      setSmsNotice({
-        type: smsResult.sent ? "success" : "error",
-        text: smsResult.sent
-          ? `SMS sent to ${maskPhone(smsResult.phone)}.`
-          : `Appointment scheduled, but SMS was not sent. ${
-              smsResult.reason || "Check the 2Factor API key, sender ID, and browser console."
-            }`,
+      await updateDoc(doc(db, "artifacts", appId, "appointments", appointment.id), {
+        smsStatus: smsResult.sent ? "sent" : "failed",
+        smsTo: maskPhone(smsResult.phone),
+        smsReason: smsResult.reason || "",
+        smsTemplateName: "Schedule",
+        smsUpdatedAt: serverTimestamp(),
+        smsUpdatedAtClient: new Date().toISOString(),
       });
+      if (!smsResult.sent) {
+        setSmsNotice({
+          type: "error",
+          text: `Appointment scheduled, but SMS was not sent. ${
+            smsResult.reason || "Check the 2Factor API key, sender ID, and browser console."
+          }`,
+        });
+      }
       await writeAuditLog(db, appId, profile, "appointment_scheduled", "appointment", appointment.id, {
         queueToken: currentToken,
         patientName: appointment.patientName,
@@ -2694,6 +2703,33 @@ const AttenderDashboard = ({ db, appId, profile }) => {
                         <p className="mt-1 text-sm text-gray-600">
                           {item.scheduledDate} at {item.scheduledTime} with {item.doctorName}
                         </p>
+                        <div className="mt-2 flex flex-wrap items-center gap-2">
+                          <span
+                            className={`rounded-lg border px-2.5 py-1 text-xs font-bold ${
+                              item.smsStatus === "sent"
+                                ? "border-green-200 bg-green-50 text-green-800"
+                                : item.smsStatus === "failed"
+                                  ? "border-red-200 bg-red-50 text-red-800"
+                                  : "border-gray-200 bg-gray-50 text-gray-700"
+                            }`}
+                          >
+                            {item.smsStatus === "sent"
+                              ? "SMS Sent"
+                              : item.smsStatus === "failed"
+                                ? "SMS not sent"
+                                : "SMS pending"}
+                          </span>
+                          {item.smsTo ? (
+                            <span className="text-xs font-semibold text-gray-500">
+                              {item.smsTo}
+                            </span>
+                          ) : null}
+                        </div>
+                        {item.smsStatus === "failed" && item.smsReason ? (
+                          <p className="mt-2 text-xs font-semibold text-red-700">
+                            {item.smsReason}
+                          </p>
+                        ) : null}
                       </div>
                       <Badge status={item.status}>{APPOINTMENT_STATUS[item.status]}</Badge>
                     </div>
