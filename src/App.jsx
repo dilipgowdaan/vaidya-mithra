@@ -248,8 +248,51 @@ const generateQueueToken = (appointments) => {
   return `OPD-${String(maxToken + 1).padStart(3, "0")}`;
 };
 
+const getScheduledMillis = (item) => {
+  if (!item?.scheduledDate || !item?.scheduledTime) return 0;
+  const millis = Date.parse(`${item.scheduledDate}T${item.scheduledTime}`);
+  return Number.isNaN(millis) ? 0 : millis;
+};
+
+const sortBySchedule = (items) =>
+  [...items].sort((a, b) => {
+    const scheduledDiff = getScheduledMillis(a) - getScheduledMillis(b);
+    if (scheduledDiff !== 0) return scheduledDiff;
+    return getCreatedMillis(a) - getCreatedMillis(b);
+  });
+
+const buildDailyQueueAssignments = (appointments, currentAppointment, scheduledDate, scheduledTime) => {
+  const scheduledStatuses = ["scheduled", "ready", "completed"];
+  const dayAppointments = appointments
+    .filter((item) => item.id !== currentAppointment.id)
+    .filter((item) => item.scheduledDate === scheduledDate)
+    .filter((item) => scheduledStatuses.includes(item.status))
+    .map((item) => ({ ...item }));
+
+  dayAppointments.push({
+    ...currentAppointment,
+    scheduledDate,
+    scheduledTime,
+    status: "scheduled",
+  });
+
+  return sortBySchedule(dayAppointments).map((item, index) => ({
+    id: item.id,
+    queueToken: `OPD-${String(index + 1).padStart(3, "0")}`,
+  }));
+};
+
 const getWaitingCountBefore = (appointment, appointments) => {
   if (!appointment || !ACTIVE_APPOINTMENT_STATUSES.includes(appointment.status)) return 0;
+  if (appointment.scheduledDate && appointment.scheduledTime) {
+    const currentSchedule = getScheduledMillis(appointment);
+    return appointments.filter((item) => {
+      if (!ACTIVE_APPOINTMENT_STATUSES.includes(item.status)) return false;
+      if (item.scheduledDate !== appointment.scheduledDate) return false;
+      const itemSchedule = getScheduledMillis(item);
+      return itemSchedule > 0 && currentSchedule > 0 && itemSchedule < currentSchedule;
+    }).length;
+  }
   const created = getCreatedMillis(appointment);
   return appointments.filter(
     (item) =>
@@ -1424,6 +1467,168 @@ const PendingApprovalPage = ({ profile }) => (
   </Page>
 );
 
+const PublicLandingPage = ({ onNavigate }) => (
+  <div className="relative min-h-full overflow-hidden bg-gradient-to-r from-blue-500 to-cyan-500 px-4 py-10 sm:px-8">
+    <div
+      className="absolute inset-0 opacity-10 bg-cover bg-center"
+      style={{
+        backgroundImage:
+          "url('https://placehold.co/1920x900/ffffff/000000?text=Health+Data+Analysis')",
+      }}
+    />
+    <div className="relative z-10 mx-auto flex min-h-[calc(100vh-10rem)] max-w-5xl flex-col items-center justify-center text-center text-white">
+      <h1 className="text-4xl font-extrabold tracking-tight drop-shadow-lg md:text-6xl">
+        Welcome to Vaidya Mithra
+      </h1>
+      <p className="mt-5 max-w-3xl text-lg leading-8 drop-shadow-md md:text-xl">
+        Get non-diagnostic insights and next steps in seconds. Powered by Gemini
+        AI for responsible health guidance, with HMIS workflows for hospital care.
+      </p>
+      <div className="mt-8 flex flex-wrap justify-center gap-4">
+        <button
+          type="button"
+          onClick={() => onNavigate("publicTriage")}
+          className="inline-flex items-center gap-2 rounded-full bg-green-500 px-7 py-3 text-base font-bold text-white shadow-xl transition hover:scale-105 hover:bg-green-600"
+        >
+          <Icon name="activity" size={20} />
+          Free AI Check
+        </button>
+        <button
+          type="button"
+          onClick={() => onNavigate("publicHospitals")}
+          className="inline-flex items-center gap-2 rounded-full bg-white px-7 py-3 text-base font-bold text-blue-800 shadow-xl transition hover:scale-105 hover:bg-blue-50"
+        >
+          <Icon name="hospital" size={20} />
+          Nearby Hospitals
+        </button>
+        <button
+          type="button"
+          onClick={() => onNavigate("login")}
+          className="inline-flex items-center gap-2 rounded-full bg-blue-950 px-7 py-3 text-base font-bold text-white shadow-xl transition hover:scale-105 hover:bg-blue-900"
+        >
+          <Icon name="user" size={20} />
+          Login
+        </button>
+      </div>
+    </div>
+
+    <div className="fixed bottom-6 right-6 z-20 flex flex-col gap-3 sm:right-8">
+      <button
+        type="button"
+        onClick={() => onNavigate("publicTriage")}
+        className="grid h-14 w-14 place-items-center rounded-full bg-green-500 text-white shadow-2xl transition hover:scale-110 hover:bg-green-600"
+        title="Free AI Check"
+      >
+        <Icon name="activity" size={24} />
+      </button>
+      <button
+        type="button"
+        onClick={() => onNavigate("login")}
+        className="grid h-14 w-14 place-items-center rounded-full bg-blue-950 text-white shadow-2xl transition hover:scale-110 hover:bg-blue-900"
+        title="Login"
+      >
+        <Icon name="user" size={24} />
+      </button>
+    </div>
+  </div>
+);
+
+const PublicNavBar = ({ currentPage, onNavigate, darkMode, onToggleDarkMode }) => {
+  const links = [
+    { id: "landing", label: "Home", icon: "home" },
+    { id: "publicTriage", label: "AI Check", icon: "activity" },
+    { id: "publicHospitals", label: "Hospitals", icon: "hospital" },
+    { id: "login", label: "Login", icon: "user" },
+  ];
+
+  return (
+    <nav className="z-20 flex-shrink-0 border-b border-gray-200 bg-white/95 shadow-sm backdrop-blur">
+      <div className="mx-auto flex h-16 max-w-7xl items-center justify-between gap-4 px-4 sm:px-6 lg:px-8">
+        <button type="button" onClick={() => onNavigate("landing")}>
+          <Logo />
+        </button>
+        <div className="flex items-center gap-1">
+          {links.map((link) => (
+            <button
+              key={link.id}
+              type="button"
+              onClick={() => onNavigate(link.id)}
+              className={`inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-semibold transition ${
+                currentPage === link.id
+                  ? "bg-blue-100 text-blue-800"
+                  : "text-gray-700 hover:bg-gray-100 hover:text-blue-700"
+              }`}
+            >
+              <Icon name={link.icon} size={17} />
+              <span className="hidden sm:inline">{link.label}</span>
+            </button>
+          ))}
+          <ThemeToggle darkMode={darkMode} onToggle={onToggleDarkMode} />
+        </div>
+      </div>
+    </nav>
+  );
+};
+
+const PublicShell = ({
+  page,
+  onNavigate,
+  darkMode,
+  onToggleDarkMode,
+  firebaseError,
+  onLogin,
+  onSignup,
+}) => {
+  const renderPublicPage = () => {
+    if (page === "publicTriage") {
+      return (
+        <TriagePage
+          db={null}
+          appId=""
+          profile={null}
+          publicMode
+          onNavigate={onNavigate}
+        />
+      );
+    }
+    if (page === "publicHospitals") return <HospitalsPage />;
+    if (page === "login") {
+      return (
+        <AuthPage
+          firebaseError={firebaseError}
+          onLogin={onLogin}
+          onSignup={onSignup}
+        />
+      );
+    }
+    return <PublicLandingPage onNavigate={onNavigate} />;
+  };
+
+  return (
+    <div className={`${darkMode ? "dark" : ""} flex h-screen w-screen flex-col overflow-hidden bg-gray-50 font-sans text-gray-900`}>
+      <style>{`
+        @keyframes fadeInUp {
+          from { opacity: 0; transform: translateY(12px); }
+          to { opacity: 1; transform: translateY(0); }
+        }
+        ${THEME_CSS}
+      `}</style>
+      {page === "login" ? null : (
+        <PublicNavBar
+          currentPage={page}
+          onNavigate={onNavigate}
+          darkMode={darkMode}
+          onToggleDarkMode={onToggleDarkMode}
+        />
+      )}
+      <main className="min-h-0 flex-grow overflow-y-auto">
+        <div style={{ animation: "fadeInUp 0.2s ease-out" }}>{renderPublicPage()}</div>
+      </main>
+      {page === "login" ? null : <Footer />}
+    </div>
+  );
+};
+
 const PatientHomePage = ({ profile, onNavigate }) => (
   <Page
     title={`Welcome, ${profile.name}`}
@@ -1468,19 +1673,26 @@ const PatientHomePage = ({ profile, onNavigate }) => (
   </Page>
 );
 
-const TriagePage = ({ db, appId, profile }) => {
+const TriagePage = ({ db, appId, profile, publicMode = false, onNavigate }) => {
   const [selectedSymptoms, setSelectedSymptoms] = useState([]);
   const [customSymptom, setCustomSymptom] = useState("");
-  const [age, setAge] = useState(profile.age || "");
-  const [gender, setGender] = useState(profile.gender || "");
+  const [age, setAge] = useState(profile?.age || "");
+  const [gender, setGender] = useState(profile?.gender || "");
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const historyPath = useMemo(
-    () => ["artifacts", appId, "users", profile.uid, "triage_history"],
-    [appId, profile.uid]
+    () =>
+      profile?.uid && appId
+        ? ["artifacts", appId, "users", profile.uid, "triage_history"]
+        : [],
+    [appId, profile?.uid]
   );
-  const { items: history } = useLiveCollection(db, historyPath, Boolean(db && appId && profile.uid));
+  const { items: history } = useLiveCollection(
+    db,
+    historyPath,
+    Boolean(db && appId && profile?.uid && !publicMode)
+  );
   const recentHistory = sortNewest(history).slice(0, 5);
 
   const toggleSymptom = (symptom) => {
@@ -1536,14 +1748,16 @@ Rules:
       };
       setResult(normalized);
 
-      await addDoc(triageHistoryCol(db, appId, profile.uid), {
-        symptoms: selectedSymptoms,
-        age: age || "",
-        gender: gender || "",
-        result: normalized,
-        createdAt: serverTimestamp(),
-        createdAtClient: new Date().toISOString(),
-      });
+      if (db && appId && profile?.uid && !publicMode) {
+        await addDoc(triageHistoryCol(db, appId, profile.uid), {
+          symptoms: selectedSymptoms,
+          age: age || "",
+          gender: gender || "",
+          result: normalized,
+          createdAt: serverTimestamp(),
+          createdAtClient: new Date().toISOString(),
+        });
+      }
     } catch (predictionError) {
       setError(predictionError.message || "Unable to generate AI assessment.");
     } finally {
@@ -1687,28 +1901,30 @@ Rules:
             )}
           </Card>
 
-          <Card>
-            <h3 className="mb-3 text-lg font-bold text-gray-950">Recent History</h3>
-            <div className="space-y-3">
-              {recentHistory.length === 0 ? (
-                <p className="text-sm text-gray-500">No recent triage checks.</p>
-              ) : (
-                recentHistory.map((item) => (
-                  <div key={item.id} className="rounded-lg border border-gray-200 bg-gray-50 p-3">
-                    <p className="text-xs font-semibold text-gray-500">
-                      {formatDateTime(item.createdAt || item.createdAtClient)}
-                    </p>
-                    <p className="mt-1 truncate text-sm text-gray-700">
-                      {item.symptoms?.join(", ")}
-                    </p>
-                    <p className="mt-1 text-xs font-semibold text-green-700">
-                      Top: {item.result?.predictions?.[0]?.disease || "N/A"}
-                    </p>
-                  </div>
-                ))
-              )}
-            </div>
-          </Card>
+          {!publicMode ? (
+            <Card>
+              <h3 className="mb-3 text-lg font-bold text-gray-950">Recent History</h3>
+              <div className="space-y-3">
+                {recentHistory.length === 0 ? (
+                  <p className="text-sm text-gray-500">No recent triage checks.</p>
+                ) : (
+                  recentHistory.map((item) => (
+                    <div key={item.id} className="rounded-lg border border-gray-200 bg-gray-50 p-3">
+                      <p className="text-xs font-semibold text-gray-500">
+                        {formatDateTime(item.createdAt || item.createdAtClient)}
+                      </p>
+                      <p className="mt-1 truncate text-sm text-gray-700">
+                        {item.symptoms?.join(", ")}
+                      </p>
+                      <p className="mt-1 text-xs font-semibold text-green-700">
+                        Top: {item.result?.predictions?.[0]?.disease || "N/A"}
+                      </p>
+                    </div>
+                  ))
+                )}
+              </div>
+            </Card>
+          ) : null}
         </div>
       </div>
     </Page>
@@ -1945,11 +2161,16 @@ const PatientAppointmentsPage = ({ db, appId, profile }) => {
                     </Badge>
                   </div>
                   <div className="mt-4 grid gap-3 text-sm text-gray-700 sm:grid-cols-2">
-                    <p>
-                      <strong>Doctor:</strong> {item.doctorName || "Not assigned"}
-                    </p>
-                    <p>
-                      <strong>Schedule:</strong>{" "}
+                      <p>
+                        <strong>Doctor:</strong> {item.doctorName || "Not assigned"}
+                      </p>
+                      {item.referralType === "specialist" ? (
+                        <p>
+                          <strong>Referral:</strong> From Dr. {item.referredByDoctorName || "OPD"}
+                        </p>
+                      ) : null}
+                      <p>
+                        <strong>Schedule:</strong>{" "}
                       {item.scheduledDate && item.scheduledTime
                         ? `${item.scheduledDate} at ${item.scheduledTime}`
                         : "Not scheduled"}
@@ -2099,8 +2320,20 @@ const AttenderDashboard = ({ db, appId, profile }) => {
 
     setBusyId(appointment.id);
     try {
+      const tokenAssignments = buildDailyQueueAssignments(
+        appointments,
+        appointment,
+        form.date,
+        form.time
+      );
+      const currentToken =
+        tokenAssignments.find((item) => item.id === appointment.id)?.queueToken ||
+        appointment.queueToken ||
+        "OPD-001";
+
       await updateDoc(doc(db, "artifacts", appId, "appointments", appointment.id), {
         status: "scheduled",
+        queueToken: currentToken,
         scheduledDate: form.date,
         scheduledTime: form.time,
         doctorId: doctor.uid,
@@ -2114,17 +2347,29 @@ const AttenderDashboard = ({ db, appId, profile }) => {
           appointmentEvent("scheduled", profile, `Scheduled with ${doctor.name}`)
         ),
       });
+      await Promise.all(
+        tokenAssignments
+          .filter((item) => item.id !== appointment.id)
+          .map((item) =>
+            updateDoc(doc(db, "artifacts", appId, "appointments", item.id), {
+              queueToken: item.queueToken,
+              updatedAt: serverTimestamp(),
+              updatedAtClient: new Date().toISOString(),
+            })
+          )
+      );
       await writeNotification(db, appId, appointment.patientId, {
         title: "Appointment scheduled",
-        message: `${appointment.queueToken || "Your appointment"} is scheduled on ${form.date} at ${form.time} with ${doctor.name}.`,
+        message: `${currentToken} is scheduled on ${form.date} at ${form.time} with ${doctor.name}.`,
         appointmentId: appointment.id,
       });
       await writeAuditLog(db, appId, profile, "appointment_scheduled", "appointment", appointment.id, {
-        queueToken: appointment.queueToken || "",
+        queueToken: currentToken,
         patientName: appointment.patientName,
         doctorName: doctor.name,
         scheduledDate: form.date,
         scheduledTime: form.time,
+        dailyTokenRebalanced: tokenAssignments.length,
       });
     } finally {
       setBusyId("");
@@ -2427,13 +2672,23 @@ const DoctorDashboard = ({ db, appId, profile }) => {
     ["artifacts", appId, "appointments"],
     Boolean(db && appId)
   );
+  const { items: users } = useLiveCollection(
+    db,
+    ["artifacts", appId, "all_users"],
+    Boolean(db && appId)
+  );
   const [activeId, setActiveId] = useState("");
   const [notes, setNotes] = useState("");
+  const [specialistDoctorId, setSpecialistDoctorId] = useState("");
+  const [referralNote, setReferralNote] = useState("");
   const [search, setSearch] = useState("");
   const [busy, setBusy] = useState(false);
-  const queue = sortNewest(
+  const approvedSpecialists = users
+    .filter((user) => user.role === "doctor" && user.status === "approved" && user.uid !== profile.uid)
+    .sort((a, b) => String(a.name).localeCompare(String(b.name)));
+  const queue = sortBySchedule(
     appointments
-      .filter((item) => item.status === "ready" && item.doctorId === profile.uid)
+      .filter((item) => ["scheduled", "ready"].includes(item.status) && item.doctorId === profile.uid)
       .filter((item) => matchesAppointmentSearch(item, search))
   );
   const activeAppointment = queue.find((item) => item.id === activeId);
@@ -2441,15 +2696,22 @@ const DoctorDashboard = ({ db, appId, profile }) => {
   const startConsult = (appointment) => {
     setActiveId(appointment.id);
     setNotes(appointment.clinicalNotes || "");
+    setSpecialistDoctorId("");
+    setReferralNote("");
   };
 
   const completeConsult = async () => {
-    if (!activeAppointment || !notes.trim()) return;
+    if (!activeAppointment || activeAppointment.status !== "ready" || !notes.trim()) return;
+    const specialist = approvedSpecialists.find((item) => item.uid === specialistDoctorId);
     setBusy(true);
     try {
       await updateDoc(doc(db, "artifacts", appId, "appointments", activeAppointment.id), {
         status: "completed",
         clinicalNotes: notes.trim(),
+        referralRequested: Boolean(specialist),
+        referredToDoctorId: specialist?.uid || "",
+        referredToDoctorName: specialist?.name || "",
+        referralNote: specialist ? referralNote.trim() : "",
         completedAt: serverTimestamp(),
         completedAtClient: new Date().toISOString(),
         completedBy: profile.uid,
@@ -2475,8 +2737,60 @@ const DoctorDashboard = ({ db, appId, profile }) => {
         patientName: activeAppointment.patientName,
         noteLength: notes.trim().length,
       });
+
+      if (specialist) {
+        const referralQueueToken = generateQueueToken(appointments);
+        const referralReason =
+          referralNote.trim() ||
+          `Specialist referral from Dr. ${profile.name} after OPD consultation.`;
+        const referral = await addDoc(appointmentsCol(db, appId), {
+          patientId: activeAppointment.patientId,
+          patientName: activeAppointment.patientName,
+          patientEmail: activeAppointment.patientEmail || "",
+          queueToken: referralQueueToken,
+          reason: referralReason,
+          status: "ready",
+          doctorId: specialist.uid,
+          doctorName: specialist.name,
+          doctorEmail: specialist.email || "",
+          scheduledDate:
+            activeAppointment.scheduledDate || new Date().toISOString().slice(0, 10),
+          scheduledTime: activeAppointment.scheduledTime || "",
+          vitals: activeAppointment.vitals || {},
+          referredFromAppointmentId: activeAppointment.id,
+          referredByDoctorId: profile.uid,
+          referredByDoctorName: profile.name,
+          referralType: "specialist",
+          originalClinicalNotes: notes.trim(),
+          createdAt: serverTimestamp(),
+          createdAtClient: new Date().toISOString(),
+          updatedAt: serverTimestamp(),
+          updatedAtClient: new Date().toISOString(),
+          statusEvents: [
+            appointmentEvent(
+              "ready",
+              profile,
+              `Specialist referral created for ${specialist.name}`
+            ),
+          ],
+        });
+        await writeNotification(db, appId, activeAppointment.patientId, {
+          title: "Specialist consultation requested",
+          message: `Dr. ${profile.name} referred you to Dr. ${specialist.name}. Token: ${referralQueueToken}.`,
+          appointmentId: referral.id,
+        });
+        await writeAuditLog(db, appId, profile, "specialist_referral_created", "appointment", referral.id, {
+          sourceAppointmentId: activeAppointment.id,
+          patientName: activeAppointment.patientName,
+          specialistDoctorName: specialist.name,
+          queueToken: referralQueueToken,
+          referralReason,
+        });
+      }
       setActiveId("");
       setNotes("");
+      setSpecialistDoctorId("");
+      setReferralNote("");
     } finally {
       setBusy(false);
     }
@@ -2485,12 +2799,12 @@ const DoctorDashboard = ({ db, appId, profile }) => {
   return (
     <Page
       title="Doctor Consultation"
-      subtitle="Review ready appointments assigned to you, then complete clinical notes or prescriptions."
+      subtitle="Review scheduled and ready appointments assigned to you. Completion opens after vitals are recorded."
     >
       <div className="grid gap-6 lg:grid-cols-[0.9fr_1.1fr]">
         <Card>
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <h2 className="text-lg font-bold text-gray-950">Ready Queue</h2>
+            <h2 className="text-lg font-bold text-gray-950">Assigned Queue</h2>
             <Input
               value={search}
               onChange={(event) => setSearch(event.target.value)}
@@ -2499,7 +2813,7 @@ const DoctorDashboard = ({ db, appId, profile }) => {
           </div>
           <div className="mt-4 space-y-3">
             {queue.length === 0 ? (
-              <EmptyState title="No ready appointments assigned to you" />
+              <EmptyState title="No appointments assigned to you" />
             ) : (
               queue.map((item) => (
                 <button
@@ -2519,6 +2833,9 @@ const DoctorDashboard = ({ db, appId, profile }) => {
                       </p>
                       <p className="mt-1 font-bold text-gray-950">{item.patientName}</p>
                       <p className="mt-1 text-sm text-gray-600">{item.reason}</p>
+                      <p className="mt-1 text-xs font-semibold text-gray-500">
+                        {item.scheduledDate || "No date"} at {item.scheduledTime || "No time"}
+                      </p>
                     </div>
                     <Badge status={item.status}>{APPOINTMENT_STATUS[item.status]}</Badge>
                   </div>
@@ -2531,9 +2848,16 @@ const DoctorDashboard = ({ db, appId, profile }) => {
         <Card>
           <h2 className="text-lg font-bold text-gray-950">Consultation Workspace</h2>
           {!activeAppointment ? (
-            <EmptyState title="Select a patient" body="Start Consult from your ready queue." />
+            <EmptyState title="Select a patient" body="Open an assigned appointment from your queue." />
           ) : (
             <div className="mt-4 space-y-4">
+              {activeAppointment.status === "scheduled" ? (
+                <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+                  This appointment is assigned to you and scheduled, but the patient
+                  has not been marked ready yet. Completion unlocks after the attender
+                  records vitals.
+                </div>
+              ) : null}
               <div className="rounded-lg bg-gray-50 p-4 text-sm text-gray-700">
                 <p>
                   <strong>Patient:</strong> {activeAppointment.patientName}
@@ -2543,6 +2867,12 @@ const DoctorDashboard = ({ db, appId, profile }) => {
                 </p>
                 <p className="mt-2">
                   <strong>Reason:</strong> {activeAppointment.reason}
+                </p>
+                <p className="mt-2">
+                  <strong>Schedule:</strong>{" "}
+                  {activeAppointment.scheduledDate && activeAppointment.scheduledTime
+                    ? `${activeAppointment.scheduledDate} at ${activeAppointment.scheduledTime}`
+                    : "N/A"}
                 </p>
                 <div className="mt-3 grid gap-2 sm:grid-cols-3">
                   <p>
@@ -2561,13 +2891,53 @@ const DoctorDashboard = ({ db, appId, profile }) => {
                   value={notes}
                   onChange={(event) => setNotes(event.target.value)}
                   placeholder="Enter notes, prescriptions, follow-up instructions, and safety advice."
+                  disabled={activeAppointment.status !== "ready"}
                 />
               </Field>
+
+              <div className="rounded-lg border border-blue-100 bg-blue-50 p-4">
+                <h3 className="text-sm font-bold text-blue-900">Further Specialist Consultation</h3>
+                <p className="mt-1 text-xs leading-5 text-blue-800">
+                  Optional: choose a specialist doctor if the OPD visit needs admitted
+                  treatment, specialist review, or follow-up consultation.
+                </p>
+                <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                  <Field label="Specialist Doctor">
+                    <Select
+                      value={specialistDoctorId}
+                      onChange={(event) => setSpecialistDoctorId(event.target.value)}
+                      disabled={activeAppointment.status !== "ready"}
+                    >
+                      <option value="">No specialist referral</option>
+                      {approvedSpecialists.map((doctor) => (
+                        <option key={doctor.uid} value={doctor.uid}>
+                          {doctor.name}
+                        </option>
+                      ))}
+                    </Select>
+                  </Field>
+                  <Field label="Referral Note">
+                    <Input
+                      value={referralNote}
+                      onChange={(event) => setReferralNote(event.target.value)}
+                      placeholder="Reason for specialist consult"
+                      disabled={activeAppointment.status !== "ready" || !specialistDoctorId}
+                    />
+                  </Field>
+                </div>
+                {specialistDoctorId ? (
+                  <p className="mt-3 text-xs font-semibold text-blue-800">
+                    Completing this consult will create a new ready consultation for
+                    the selected specialist.
+                  </p>
+                ) : null}
+              </div>
+
               <Button
                 type="button"
                 variant="success"
                 loading={busy}
-                disabled={!notes.trim()}
+                disabled={activeAppointment.status !== "ready" || !notes.trim()}
                 onClick={completeConsult}
               >
                 Complete
@@ -3783,6 +4153,7 @@ const App = () => {
   const [profileReady, setProfileReady] = useState(false);
   const [profileError, setProfileError] = useState("");
   const [page, setPage] = useState("patientHome");
+  const [publicPage, setPublicPage] = useState("landing");
   const [darkMode, setDarkMode] = useState(() => {
     if (typeof window === "undefined") return false;
     try {
@@ -4070,7 +4441,11 @@ const App = () => {
 
   if (!currentUser) {
     return (
-      <AuthPage
+      <PublicShell
+        page={publicPage}
+        onNavigate={setPublicPage}
+        darkMode={darkMode}
+        onToggleDarkMode={toggleDarkMode}
         firebaseError={firebaseError}
         onLogin={handleLogin}
         onSignup={handleSignup}
