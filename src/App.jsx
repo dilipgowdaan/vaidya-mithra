@@ -2553,6 +2553,31 @@ const PendingLayout = ({ auth, db, appId, profile, currentPage, onNavigate, onLo
   );
 };
 
+const ProfileLoadErrorPage = ({ error, onLogout }) => (
+  <div className="grid h-screen place-items-center bg-gradient-to-br from-red-50 via-white to-blue-50 px-4">
+    <Card className="max-w-xl text-center">
+      <div className="mx-auto grid h-14 w-14 place-items-center rounded-lg bg-red-100 text-red-700">
+        <Icon name="alertTriangle" size={28} />
+      </div>
+      <h1 className="mt-5 text-2xl font-bold text-gray-950">Profile could not be loaded</h1>
+      <p className="mt-3 text-sm leading-6 text-gray-600">
+        Firebase Auth has a signed-in user, but the HMIS profile document could
+        not be read or created. Sign out, then sign in again with an email and
+        password account.
+      </p>
+      {error ? (
+        <div className="mt-5 rounded-lg border border-red-200 bg-red-50 p-3 text-left text-xs text-red-700">
+          {error}
+        </div>
+      ) : null}
+      <Button type="button" variant="secondary" className="mt-6" onClick={onLogout}>
+        <Icon name="logOut" size={16} />
+        Sign out
+      </Button>
+    </Card>
+  </div>
+);
+
 const LoadingScreen = ({ label = "Loading Vaidya Mithra..." }) => (
   <div className="grid h-screen place-items-center bg-blue-50">
     <div className="text-center">
@@ -2571,6 +2596,7 @@ const App = () => {
   const [currentUser, setCurrentUser] = useState(null);
   const [profile, setProfile] = useState(null);
   const [profileReady, setProfileReady] = useState(false);
+  const [profileError, setProfileError] = useState("");
   const [page, setPage] = useState("patientHome");
 
   useEffect(() => {
@@ -2598,8 +2624,20 @@ const App = () => {
     if (!auth) return undefined;
 
     const unsubscribe = onAuthStateChanged(auth, (user) => {
+      if (user?.isAnonymous) {
+        setCurrentUser(null);
+        setProfile(null);
+        setProfileError("");
+        setProfileReady(true);
+        signOut(auth).catch((error) =>
+          setFirebaseError(error.message || "Could not clear anonymous session.")
+        );
+        return;
+      }
+
       setCurrentUser(user);
       setProfile(null);
+      setProfileError("");
       setProfileReady(!user);
     });
 
@@ -2615,18 +2653,33 @@ const App = () => {
       async (snapshot) => {
         if (snapshot.exists()) {
           setProfile({ id: currentUser.uid, uid: currentUser.uid, ...snapshot.data() });
+          setProfileError("");
           setProfileReady(true);
           return;
         }
 
-        await ensureGlobalProfile(db, appId, currentUser, {
-          name: currentUser.displayName || normalizeEmail(currentUser.email).split("@")[0],
-          role: "patient",
-          status: "approved",
-        });
+        try {
+          const isPersistedSuperAdmin =
+            normalizeEmail(currentUser.email) === SUPER_ADMIN_EMAIL.toLowerCase();
+          await ensureGlobalProfile(db, appId, currentUser, {
+            name:
+              currentUser.displayName ||
+              (isPersistedSuperAdmin
+                ? "Super Admin"
+                : normalizeEmail(currentUser.email).split("@")[0]),
+            role: isPersistedSuperAdmin ? "admin" : "patient",
+            status: "approved",
+          });
+        } catch (error) {
+          setProfile(null);
+          setProfileError(error.message || "Could not create the missing profile document.");
+          setProfileReady(true);
+        }
       },
       (error) => {
         setFirebaseError(error.message || "Could not load profile.");
+        setProfileError(error.message || "Could not load profile.");
+        setProfile(null);
         setProfileReady(true);
       }
     );
@@ -2791,7 +2844,16 @@ const App = () => {
     );
   }
 
-  if (!profileReady || !profile) return <LoadingScreen label="Loading profile..." />;
+  if (!profileReady) return <LoadingScreen label="Loading profile..." />;
+
+  if (!profile) {
+    return (
+      <ProfileLoadErrorPage
+        error={profileError || firebaseError}
+        onLogout={handleLogout}
+      />
+    );
+  }
 
   if (profile.status !== "approved") {
     return (
