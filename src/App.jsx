@@ -524,10 +524,11 @@ const maskPhone = (value) => {
 const buildScheduleSmsMessage = ({ patientName, queueToken, scheduledDate, scheduledTime, doctorName }) =>
   `Hi, ${patientName || "Patient"}, ${queueToken || "your appointment"} is scheduled on ${scheduledDate} at ${scheduledTime} with ${doctorName}.`;
 
-const sendScheduledAppointmentSms = async (patientPhone, scheduleMessage) => {
+const sendScheduledAppointmentSms = async (patientPhone, scheduleDetails) => {
   const to = formatIndianSmsNumber(patientPhone);
   const apiKey = env.VITE_TWO_FACTOR_API_KEY || "";
   const senderId = env.VITE_TWO_FACTOR_SENDER_ID || "Vaidya";
+  const scheduleMessage = buildScheduleSmsMessage(scheduleDetails);
 
   if (!to || !scheduleMessage) {
     return { sent: false, phone: to, reason: "Missing phone number or message." };
@@ -538,16 +539,21 @@ const sendScheduledAppointmentSms = async (patientPhone, scheduleMessage) => {
   }
 
   try {
+    const body = new URLSearchParams({
+      From: senderId,
+      To: to,
+      TemplateName: "Schedule",
+      VAR1: scheduleDetails.patientName || "Patient",
+      VAR2: scheduleDetails.queueToken || "your appointment",
+      VAR3: scheduleDetails.scheduledDate || "",
+      VAR4: scheduleDetails.scheduledTime || "",
+      VAR5: scheduleDetails.doctorName || "",
+    });
     const response = await fetch(
       `https://2factor.in/API/V1/${apiKey}/ADDON_SERVICES/SEND/TSMS`,
       {
         method: "POST",
-        body: JSON.stringify({
-          From: senderId,
-          To: to,
-          TemplateName: "Schedule",
-          Msg: scheduleMessage,
-        }),
+        body,
       }
     );
     const responseText = await response.text();
@@ -2339,6 +2345,7 @@ const AttenderDashboard = ({ db, appId, profile }) => {
   const [queueDate, setQueueDate] = useState("");
   const [busyId, setBusyId] = useState("");
   const [smsNotice, setSmsNotice] = useState(null);
+  const [smsResultsByAppointment, setSmsResultsByAppointment] = useState({});
   const approvedDoctors = users
     .filter((user) => user.role === "doctor" && user.status === "approved")
     .sort((a, b) => String(a.name).localeCompare(String(b.name)));
@@ -2392,13 +2399,14 @@ const AttenderDashboard = ({ db, appId, profile }) => {
         "OPD-001";
       const patient = users.find((item) => item.uid === appointment.patientId);
       const notificationMessage = `${currentToken} is scheduled on ${form.date} at ${form.time} with ${doctor.name}.`;
-      const scheduleMessage = buildScheduleSmsMessage({
+      const scheduleDetails = {
         patientName: appointment.patientName,
         queueToken: currentToken,
         scheduledDate: form.date,
         scheduledTime: form.time,
         doctorName: doctor.name,
-      });
+      };
+      const scheduleMessage = buildScheduleSmsMessage(scheduleDetails);
 
       await updateDoc(doc(db, "artifacts", appId, "appointments", appointment.id), {
         status: "scheduled",
@@ -2432,9 +2440,22 @@ const AttenderDashboard = ({ db, appId, profile }) => {
         message: notificationMessage,
         appointmentId: appointment.id,
       });
-      const smsResult = await sendScheduledAppointmentSms(patient?.phone || "", scheduleMessage);
+      setSmsResultsByAppointment((state) => ({
+        ...state,
+        [appointment.id]: { status: "pending", to: "", reason: "" },
+      }));
+      const smsResult = await sendScheduledAppointmentSms(patient?.phone || "", scheduleDetails);
+      const nextSmsStatus = smsResult.sent ? "sent" : "failed";
+      setSmsResultsByAppointment((state) => ({
+        ...state,
+        [appointment.id]: {
+          status: nextSmsStatus,
+          to: maskPhone(smsResult.phone),
+          reason: smsResult.reason || "",
+        },
+      }));
       await updateDoc(doc(db, "artifacts", appId, "appointments", appointment.id), {
-        smsStatus: smsResult.sent ? "sent" : "failed",
+        smsStatus: nextSmsStatus,
         smsTo: maskPhone(smsResult.phone),
         smsReason: smsResult.reason || "",
         smsTemplateName: "Schedule",
@@ -2691,6 +2712,10 @@ const AttenderDashboard = ({ db, appId, profile }) => {
             ) : (
               scheduled.map((item) => {
                 const form = vitalForms[item.id] || {};
+                const localSmsResult = smsResultsByAppointment[item.id] || {};
+                const smsStatus = localSmsResult.status || item.smsStatus || "pending";
+                const smsTo = localSmsResult.to || item.smsTo || "";
+                const smsReason = localSmsResult.reason || item.smsReason || "";
                 return (
                   <div key={item.id} className="rounded-lg border border-gray-200 p-4">
                     <div className="flex flex-wrap justify-between gap-3">
@@ -2706,28 +2731,28 @@ const AttenderDashboard = ({ db, appId, profile }) => {
                         <div className="mt-2 flex flex-wrap items-center gap-2">
                           <span
                             className={`rounded-lg border px-2.5 py-1 text-xs font-bold ${
-                              item.smsStatus === "sent"
+                              smsStatus === "sent"
                                 ? "border-green-200 bg-green-50 text-green-800"
-                                : item.smsStatus === "failed"
+                                : smsStatus === "failed"
                                   ? "border-red-200 bg-red-50 text-red-800"
                                   : "border-gray-200 bg-gray-50 text-gray-700"
                             }`}
                           >
-                            {item.smsStatus === "sent"
+                            {smsStatus === "sent"
                               ? "SMS Sent"
-                              : item.smsStatus === "failed"
+                              : smsStatus === "failed"
                                 ? "SMS not sent"
                                 : "SMS pending"}
                           </span>
-                          {item.smsTo ? (
+                          {smsTo ? (
                             <span className="text-xs font-semibold text-gray-500">
-                              {item.smsTo}
+                              {smsTo}
                             </span>
                           ) : null}
                         </div>
-                        {item.smsStatus === "failed" && item.smsReason ? (
+                        {smsStatus === "failed" && smsReason ? (
                           <p className="mt-2 text-xs font-semibold text-red-700">
-                            {item.smsReason}
+                            {smsReason}
                           </p>
                         ) : null}
                       </div>
