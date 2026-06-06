@@ -22,7 +22,10 @@ import {
   updateDoc,
 } from "firebase/firestore";
 
-const env = typeof process !== "undefined" && process.env ? process.env : {};
+// Safe dynamic lookup to support both modern Vite configurations and older ES2015 target environments
+const env = typeof dynamicImportMeta !== "undefined" 
+  ? dynamicImportMeta 
+  : (typeof import.meta !== "undefined" && import.meta.env ? import.meta.env : (typeof process !== "undefined" && process.env ? process.env : {}));
 
 const SUPER_ADMIN_EMAIL = "admin@gmail.com";
 const SUPER_ADMIN_PASSWORD = "Admin@123";
@@ -349,7 +352,7 @@ const appointmentEvent = (status, actor, label) => ({
 });
 
 const callGemini = async ({ prompt, schema }) => {
-  const apiKey = "";
+  const apiKey = env.VITE_VAIDYA_MITHRA_GEMINI_KEY || env.VITE_GEMINI_API_KEY || "";
 
   const response = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${apiKey}`,
