@@ -14,7 +14,6 @@ import {
   arrayUnion,
   collection,
   doc,
-  getDoc,
   getFirestore,
   onSnapshot,
   serverTimestamp,
@@ -269,10 +268,21 @@ const isAllowedPage = (page, role) =>
     .map((item) => item.id)
     .includes(page);
 
+const isPermissionDenied = (error) =>
+  error?.code === "permission-denied" ||
+  String(error?.message || "").toLowerCase().includes("missing or insufficient permissions");
+
+const warnOptionalFirestoreFailure = (label, error) => {
+  if (isPermissionDenied(error)) {
+    console.warn(`${label} skipped because Firestore rules denied access.`, error);
+    return;
+  }
+  console.warn(`${label} failed.`, error);
+};
+
 const ensureGlobalProfile = async (db, appId, user, values) => {
   const uid = user.uid;
   const email = normalizeEmail(user.email);
-  const existing = await getDoc(allUserRef(db, appId, uid));
   const now = new Date().toISOString();
   const payload = {
     uid,
@@ -285,17 +295,17 @@ const ensureGlobalProfile = async (db, appId, user, values) => {
     status: values.status || "pending",
     updatedAt: serverTimestamp(),
     updatedAtClient: now,
+    createdAt: serverTimestamp(),
+    createdAtClient: now,
   };
 
-  if (!existing.exists()) {
-    payload.createdAt = serverTimestamp();
-    payload.createdAtClient = now;
-  }
+  await setDoc(userProfileRef(db, appId, uid), payload, { merge: true });
 
-  await Promise.all([
-    setDoc(userProfileRef(db, appId, uid), payload, { merge: true }),
-    setDoc(allUserRef(db, appId, uid), payload, { merge: true }),
-  ]);
+  try {
+    await setDoc(allUserRef(db, appId, uid), payload, { merge: true });
+  } catch (error) {
+    warnOptionalFirestoreFailure("Global user directory mirror", error);
+  }
 
   return payload;
 };
@@ -306,22 +316,29 @@ const updateProfileDocuments = async (db, appId, uid, values) => {
     updatedAt: serverTimestamp(),
     updatedAtClient: new Date().toISOString(),
   };
-  await Promise.all([
-    setDoc(userProfileRef(db, appId, uid), payload, { merge: true }),
-    setDoc(allUserRef(db, appId, uid), payload, { merge: true }),
-  ]);
+  await setDoc(userProfileRef(db, appId, uid), payload, { merge: true });
+
+  try {
+    await setDoc(allUserRef(db, appId, uid), payload, { merge: true });
+  } catch (error) {
+    warnOptionalFirestoreFailure("Global user directory mirror update", error);
+  }
 };
 
 const writeNotification = async (db, appId, userId, payload) => {
   if (!db || !appId || !userId) return;
-  await addDoc(notificationsCol(db, appId, userId), {
-    title: payload.title,
-    message: payload.message,
-    appointmentId: payload.appointmentId || "",
-    read: false,
-    createdAt: serverTimestamp(),
-    createdAtClient: new Date().toISOString(),
-  });
+  try {
+    await addDoc(notificationsCol(db, appId, userId), {
+      title: payload.title,
+      message: payload.message,
+      appointmentId: payload.appointmentId || "",
+      read: false,
+      createdAt: serverTimestamp(),
+      createdAtClient: new Date().toISOString(),
+    });
+  } catch (error) {
+    warnOptionalFirestoreFailure("Patient notification", error);
+  }
 };
 
 const appointmentEvent = (status, actor, label) => ({
@@ -2553,6 +2570,121 @@ const PendingLayout = ({ auth, db, appId, profile, currentPage, onNavigate, onLo
   );
 };
 
+const MissingProfileSetupPage = ({ db, appId, user, onComplete, onLogout }) => {
+  const [form, setForm] = useState({
+    name: user?.displayName || normalizeEmail(user?.email).split("@")[0] || "",
+    phone: "",
+    age: "",
+    gender: "",
+    role: "patient",
+  });
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  const update = (key, value) => setForm((state) => ({ ...state, [key]: value }));
+
+  const submit = async (event) => {
+    event.preventDefault();
+    setLoading(true);
+    setError("");
+    try {
+      if (user && form.name) {
+        await updateProfile(user, { displayName: form.name }).catch(() => {});
+      }
+      const status = form.role === "patient" ? "approved" : "pending";
+      const profile = await ensureGlobalProfile(db, appId, user, {
+        ...form,
+        status,
+      });
+      onComplete({ id: user.uid, uid: user.uid, ...profile });
+    } catch (setupError) {
+      setError(setupError.message || "Could not create your profile.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="grid min-h-screen place-items-center bg-gradient-to-br from-blue-50 via-white to-green-50 px-4 py-8">
+      <Card className="w-full max-w-xl">
+        <div className="mb-5">
+          <Logo />
+        </div>
+        <h1 className="text-2xl font-bold text-gray-950">Complete your HMIS profile</h1>
+        <p className="mt-2 text-sm leading-6 text-gray-600">
+          Your Firebase account exists, but the HMIS role profile was not created.
+          Choose the intended role once and the app will continue normally.
+        </p>
+        <form className="mt-6 space-y-4" onSubmit={submit}>
+          <Field label="Full name">
+            <Input
+              required
+              value={form.name}
+              onChange={(event) => update("name", event.target.value)}
+            />
+          </Field>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Field label="Phone number">
+              <Input
+                value={form.phone}
+                onChange={(event) => update("phone", event.target.value)}
+              />
+            </Field>
+            <Field label="Age">
+              <Input
+                type="number"
+                min="0"
+                value={form.age}
+                onChange={(event) => update("age", event.target.value)}
+              />
+            </Field>
+          </div>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Field label="Gender">
+              <Select
+                value={form.gender}
+                onChange={(event) => update("gender", event.target.value)}
+              >
+                <option value="">Select</option>
+                <option value="Female">Female</option>
+                <option value="Male">Male</option>
+                <option value="Non-binary">Non-binary</option>
+                <option value="Prefer not to say">Prefer not to say</option>
+              </Select>
+            </Field>
+            <Field label="Role">
+              <Select value={form.role} onChange={(event) => update("role", event.target.value)}>
+                <option value="patient">Patient</option>
+                <option value="doctor">Doctor</option>
+                <option value="attender">Attender</option>
+                <option value="admin">Admin</option>
+              </Select>
+            </Field>
+          </div>
+          {form.role !== "patient" ? (
+            <p className="rounded-lg bg-amber-50 p-3 text-xs leading-5 text-amber-800">
+              This role will be saved as pending until an approved admin confirms it.
+            </p>
+          ) : null}
+          {error ? (
+            <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+              {error}
+            </div>
+          ) : null}
+          <div className="flex flex-wrap gap-3">
+            <Button type="submit" loading={loading}>
+              Create Profile
+            </Button>
+            <Button type="button" variant="secondary" onClick={onLogout}>
+              Sign out
+            </Button>
+          </div>
+        </form>
+      </Card>
+    </div>
+  );
+};
+
 const ProfileLoadErrorPage = ({ error, onLogout }) => (
   <div className="grid h-screen place-items-center bg-gradient-to-br from-red-50 via-white to-blue-50 px-4">
     <Card className="max-w-xl text-center">
@@ -2661,15 +2793,21 @@ const App = () => {
         try {
           const isPersistedSuperAdmin =
             normalizeEmail(currentUser.email) === SUPER_ADMIN_EMAIL.toLowerCase();
-          await ensureGlobalProfile(db, appId, currentUser, {
-            name:
-              currentUser.displayName ||
-              (isPersistedSuperAdmin
-                ? "Super Admin"
-                : normalizeEmail(currentUser.email).split("@")[0]),
-            role: isPersistedSuperAdmin ? "admin" : "patient",
+          if (!isPersistedSuperAdmin) {
+            setProfile(null);
+            setProfileError("profile-missing");
+            setProfileReady(true);
+            return;
+          }
+
+          const createdProfile = await ensureGlobalProfile(db, appId, currentUser, {
+            name: currentUser.displayName || "Super Admin",
+            role: "admin",
             status: "approved",
           });
+          setProfile({ id: currentUser.uid, uid: currentUser.uid, ...createdProfile });
+          setProfileError("");
+          setProfileReady(true);
         } catch (error) {
           setProfile(null);
           setProfileError(error.message || "Could not create the missing profile document.");
@@ -2845,6 +2983,27 @@ const App = () => {
   }
 
   if (!profileReady) return <LoadingScreen label="Loading profile..." />;
+
+  if (!profile && profileError === "profile-missing") {
+    return (
+      <MissingProfileSetupPage
+        db={db}
+        appId={appId}
+        user={currentUser}
+        onLogout={handleLogout}
+        onComplete={(createdProfile) => {
+          setProfile(createdProfile);
+          setProfileError("");
+          setProfileReady(true);
+          setPage(
+            createdProfile.status === "approved"
+              ? defaultPageForRole(createdProfile.role)
+              : "pending"
+          );
+        }}
+      />
+    );
+  }
 
   if (!profile) {
     return (
