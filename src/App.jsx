@@ -211,9 +211,6 @@ const doctorAvailabilityRef = (db, appId, doctorId) =>
 const auditLogsCol = (db, appId) =>
   collection(db, "artifacts", appId, "audit_logs");
 
-const smsQueueRef = (db, appId, smsId) =>
-  doc(db, "artifacts", appId, "sms_queue", smsId);
-
 const notificationsCol = (db, appId, userId) =>
   collection(db, "artifacts", appId, "users", userId, "notifications");
 
@@ -527,45 +524,59 @@ const maskPhone = (value) => {
 const buildScheduleSmsMessage = ({ patientName, queueToken, scheduledDate, scheduledTime, doctorName }) =>
   `Hi, ${patientName || "Patient"}, ${queueToken || "your appointment"} is scheduled on ${scheduledDate} at ${scheduledTime} with ${doctorName}.`;
 
-const enqueueScheduledAppointmentSms = async (
-  db,
-  appId,
-  actor,
-  appointment,
-  patientPhone,
-  scheduleMessage
-) => {
+const sendScheduledAppointmentSms = async (patientPhone, scheduleMessage) => {
   const to = formatIndianSmsNumber(patientPhone);
-  if (!db || !appId || !appointment?.id || !to || !scheduleMessage) {
-    return { queued: false, phone: to };
+  const apiKey = env.VITE_TWO_FACTOR_API_KEY || "";
+  const senderId = env.VITE_TWO_FACTOR_SENDER_ID || "Vaidya";
+
+  if (!to || !scheduleMessage) {
+    return { sent: false, phone: to, reason: "Missing phone number or message." };
   }
 
-  const smsId = `${appointment.id}_scheduled`;
+  if (!apiKey) {
+    return { sent: false, phone: to, reason: "VITE_TWO_FACTOR_API_KEY is not configured." };
+  }
+
   try {
-    await setDoc(smsQueueRef(db, appId, smsId), {
-      type: "appointment_scheduled",
-      provider: "2factor",
-      appointmentId: appointment.id,
-      patientId: appointment.patientId || "",
-      patientName: appointment.patientName || "",
-      to,
-      message: scheduleMessage,
-      templateName: "Schedule",
-      queueToken: appointment.queueToken || "",
-      doctorName: appointment.doctorName || "",
-      scheduledDate: appointment.scheduledDate || "",
-      scheduledTime: appointment.scheduledTime || "",
-      status: "queued",
-      attempts: 0,
-      createdBy: actor?.uid || "",
-      createdByName: actor?.name || actor?.email || "",
-      createdAt: serverTimestamp(),
-      createdAtClient: new Date().toISOString(),
-    });
-    return { queued: true, phone: to };
+    const response = await fetch(
+      `https://2factor.in/API/V1/${apiKey}/ADDON_SERVICES/SEND/TSMS`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          From: senderId,
+          To: to,
+          Msg: scheduleMessage,
+        }),
+      }
+    );
+    const responseText = await response.text();
+    let providerResponse = {};
+    try {
+      providerResponse = JSON.parse(responseText);
+    } catch (error) {
+      providerResponse = { raw: responseText };
+    }
+    const providerStatus = String(
+      providerResponse.Status || providerResponse.status || ""
+    ).toLowerCase();
+    const failed =
+      !response.ok || ["error", "failed", "failure"].includes(providerStatus);
+
+    return {
+      sent: !failed,
+      phone: to,
+      providerResponse,
+      reason: failed
+        ? providerResponse.Details ||
+          providerResponse.Message ||
+          providerResponse.raw ||
+          `2Factor returned HTTP ${response.status}.`
+        : "",
+    };
   } catch (error) {
-    warnOptionalFirestoreFailure("Scheduled SMS queue", error);
-    return { queued: false, phone: to };
+    warnOptionalFirestoreFailure("Scheduled SMS", error);
+    return { sent: false, phone: to, reason: error.message || "2Factor request failed." };
   }
 };
 
@@ -2386,14 +2397,6 @@ const AttenderDashboard = ({ db, appId, profile }) => {
         scheduledTime: form.time,
         doctorName: doctor.name,
       });
-      const scheduledAppointment = {
-        ...appointment,
-        queueToken: currentToken,
-        doctorId: doctor.uid,
-        doctorName: doctor.name,
-        scheduledDate: form.date,
-        scheduledTime: form.time,
-      };
 
       await updateDoc(doc(db, "artifacts", appId, "appointments", appointment.id), {
         status: "scheduled",
@@ -2427,22 +2430,16 @@ const AttenderDashboard = ({ db, appId, profile }) => {
         message: notificationMessage,
         appointmentId: appointment.id,
       });
-      const smsResult = await enqueueScheduledAppointmentSms(
-        db,
-        appId,
-        profile,
-        scheduledAppointment,
-        patient?.phone || "",
-        scheduleMessage
-      );
+      const smsResult = await sendScheduledAppointmentSms(patient?.phone || "", scheduleMessage);
       await writeAuditLog(db, appId, profile, "appointment_scheduled", "appointment", appointment.id, {
         queueToken: currentToken,
         patientName: appointment.patientName,
         doctorName: doctor.name,
         scheduledDate: form.date,
         scheduledTime: form.time,
-        smsQueued: smsResult.queued,
+        smsSent: smsResult.sent,
         smsTo: maskPhone(smsResult.phone),
+        smsReason: smsResult.reason || "",
         dailyTokenRebalanced: tokenAssignments.length,
       });
     } finally {
