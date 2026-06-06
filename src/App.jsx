@@ -46,7 +46,21 @@ const APPOINTMENT_STATUS = {
   scheduled: "Scheduled",
   ready: "Ready for Doctor",
   completed: "Completed",
+  no_show: "No-show",
+  cancelled: "Cancelled",
 };
+
+const ACTIVE_APPOINTMENT_STATUSES = ["requested", "scheduled", "ready"];
+
+const WEEKDAYS = [
+  "Sunday",
+  "Monday",
+  "Tuesday",
+  "Wednesday",
+  "Thursday",
+  "Friday",
+  "Saturday",
+];
 
 const ALL_SYMPTOMS_CATEGORIZED = {
   General: [
@@ -188,6 +202,15 @@ const allUserRef = (db, appId, userId) =>
 const appointmentsCol = (db, appId) =>
   collection(db, "artifacts", appId, "appointments");
 
+const doctorAvailabilityCol = (db, appId) =>
+  collection(db, "artifacts", appId, "doctor_availability");
+
+const doctorAvailabilityRef = (db, appId, doctorId) =>
+  doc(db, "artifacts", appId, "doctor_availability", doctorId);
+
+const auditLogsCol = (db, appId) =>
+  collection(db, "artifacts", appId, "audit_logs");
+
 const notificationsCol = (db, appId, userId) =>
   collection(db, "artifacts", appId, "users", userId, "notifications");
 
@@ -214,12 +237,99 @@ const getCreatedMillis = (item) =>
 const sortNewest = (items) =>
   [...items].sort((a, b) => getCreatedMillis(b) - getCreatedMillis(a));
 
+const sortOldest = (items) =>
+  [...items].sort((a, b) => getCreatedMillis(a) - getCreatedMillis(b));
+
+const generateQueueToken = (appointments) => {
+  const maxToken = appointments.reduce((max, item) => {
+    const match = String(item.queueToken || "").match(/^OPD-(\d+)$/);
+    return match ? Math.max(max, Number(match[1])) : max;
+  }, 0);
+  return `OPD-${String(maxToken + 1).padStart(3, "0")}`;
+};
+
+const getWaitingCountBefore = (appointment, appointments) => {
+  if (!appointment || !ACTIVE_APPOINTMENT_STATUSES.includes(appointment.status)) return 0;
+  const created = getCreatedMillis(appointment);
+  return appointments.filter(
+    (item) =>
+      ACTIVE_APPOINTMENT_STATUSES.includes(item.status) &&
+      getCreatedMillis(item) < created
+  ).length;
+};
+
+const normalizeSearch = (value) => String(value || "").trim().toLowerCase();
+
+const matchesAppointmentSearch = (appointment, search) => {
+  const queryText = normalizeSearch(search);
+  if (!queryText) return true;
+  return [
+    appointment.patientName,
+    appointment.patientEmail,
+    appointment.doctorName,
+    appointment.queueToken,
+    appointment.reason,
+    appointment.status,
+  ]
+    .join(" ")
+    .toLowerCase()
+    .includes(queryText);
+};
+
+const getDateDayName = (date) => {
+  if (!date) return "";
+  const parsed = new Date(`${date}T00:00:00`);
+  if (Number.isNaN(parsed.getTime())) return "";
+  return WEEKDAYS[parsed.getDay()];
+};
+
+const normalizeSlots = (value) =>
+  String(value || "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .map((item) => {
+      const match = item.match(/^(\d{1,2}):(\d{2})$/);
+      if (!match) return item;
+      return `${String(match[1]).padStart(2, "0")}:${match[2]}`;
+    })
+    .sort();
+
+const getAvailabilityForDoctor = (availability, doctorId) =>
+  availability.find((item) => item.doctorId === doctorId || item.id === doctorId);
+
+const getAvailableSlotsForDate = (availabilityItem, date) => {
+  if (!availabilityItem || !date) return [];
+  const day = getDateDayName(date);
+  if (!day || !availabilityItem.days?.includes(day)) return [];
+  return Array.isArray(availabilityItem.slots) ? availabilityItem.slots : [];
+};
+
+const filterByDate = (item, date) => {
+  if (!date) return true;
+  const sourceDate =
+    item.scheduledDate ||
+    (getCreatedMillis(item)
+      ? new Date(getCreatedMillis(item)).toISOString().slice(0, 10)
+      : "");
+  return sourceDate === date;
+};
+
+const toAuditActor = (actor) => ({
+  uid: actor?.uid || actor?.id || "",
+  name: actor?.name || actor?.displayName || actor?.email || "System",
+  role: actor?.role || "",
+  email: actor?.email || "",
+});
+
 const getStatusClass = (status) => {
   const classes = {
     requested: "bg-amber-100 text-amber-800 border-amber-200",
     scheduled: "bg-blue-100 text-blue-800 border-blue-200",
     ready: "bg-purple-100 text-purple-800 border-purple-200",
     completed: "bg-green-100 text-green-800 border-green-200",
+    no_show: "bg-red-100 text-red-800 border-red-200",
+    cancelled: "bg-gray-100 text-gray-700 border-gray-200",
     approved: "bg-green-100 text-green-800 border-green-200",
     pending: "bg-amber-100 text-amber-800 border-amber-200",
     rejected: "bg-red-100 text-red-800 border-red-200",
@@ -240,6 +350,8 @@ const getNavLinks = (role) => {
       { id: "adminDashboard", label: "Dashboard", icon: "home" },
       { id: "approvals", label: "Approvals", icon: "checkCircle" },
       { id: "users", label: "Users", icon: "users" },
+      { id: "availability", label: "Availability", icon: "calendar" },
+      { id: "analytics", label: "Analytics", icon: "activity" },
       { id: "systemLog", label: "System Log", icon: "history" },
       { id: "profile", label: "Profile", icon: "user" },
       { id: "support", label: "Support", icon: "mail" },
@@ -250,6 +362,7 @@ const getNavLinks = (role) => {
     return [
       { id: "doctorDashboard", label: "Consults", icon: "stethoscope" },
       { id: "doctorHistory", label: "History", icon: "history" },
+      { id: "availability", label: "Availability", icon: "calendar" },
       { id: "profile", label: "Profile", icon: "user" },
       { id: "support", label: "Support", icon: "mail" },
     ];
@@ -349,6 +462,23 @@ const writeNotification = async (db, appId, userId, payload) => {
     });
   } catch (error) {
     warnOptionalFirestoreFailure("Patient notification", error);
+  }
+};
+
+const writeAuditLog = async (db, appId, actor, action, targetType, targetId, details = {}) => {
+  if (!db || !appId) return;
+  try {
+    await addDoc(auditLogsCol(db, appId), {
+      action,
+      targetType,
+      targetId: targetId || "",
+      actor: toAuditActor(actor),
+      details,
+      createdAt: serverTimestamp(),
+      createdAtClient: new Date().toISOString(),
+    });
+  } catch (error) {
+    warnOptionalFirestoreFailure("Audit log", error);
   }
 };
 
@@ -764,6 +894,35 @@ const StatCard = ({ label, value, icon, tone = "blue" }) => {
           <p className="text-sm text-gray-500">{label}</p>
           <p className="text-2xl font-bold text-gray-950">{value}</p>
         </div>
+      </div>
+    </Card>
+  );
+};
+
+const BarChart = ({ title, data, emptyLabel = "No data yet" }) => {
+  const max = Math.max(1, ...data.map((item) => item.value));
+  return (
+    <Card>
+      <h2 className="text-lg font-bold text-gray-950">{title}</h2>
+      <div className="mt-4 space-y-3">
+        {data.length === 0 ? (
+          <p className="text-sm text-gray-500">{emptyLabel}</p>
+        ) : (
+          data.map((item) => (
+            <div key={item.label}>
+              <div className="mb-1 flex items-center justify-between gap-3 text-sm">
+                <span className="truncate font-semibold text-gray-700">{item.label}</span>
+                <span className="font-bold text-gray-950">{item.value}</span>
+              </div>
+              <div className="h-3 rounded-full bg-gray-100">
+                <div
+                  className="h-3 rounded-full bg-blue-600"
+                  style={{ width: `${Math.max(6, (item.value / max) * 100)}%` }}
+                />
+              </div>
+            </div>
+          ))
+        )}
       </div>
     </Card>
   );
@@ -1650,6 +1809,8 @@ Reply as the assistant in 120 words or fewer.
 
 const PatientAppointmentsPage = ({ db, appId, profile }) => {
   const [reason, setReason] = useState("");
+  const [search, setSearch] = useState("");
+  const [statusFilter, setStatusFilter] = useState("all");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const { items: appointments } = useLiveCollection(
@@ -1658,8 +1819,14 @@ const PatientAppointmentsPage = ({ db, appId, profile }) => {
     Boolean(db && appId)
   );
   const patientAppointments = useMemo(
-    () => sortNewest(appointments.filter((item) => item.patientId === profile.uid)),
-    [appointments, profile.uid]
+    () =>
+      sortNewest(
+        appointments
+          .filter((item) => item.patientId === profile.uid)
+          .filter((item) => statusFilter === "all" || item.status === statusFilter)
+          .filter((item) => matchesAppointmentSearch(item, search))
+      ),
+    [appointments, profile.uid, search, statusFilter]
   );
 
   const requestConsult = async (event) => {
@@ -1673,10 +1840,12 @@ const PatientAppointmentsPage = ({ db, appId, profile }) => {
     setLoading(true);
     setError("");
     try {
-      await addDoc(appointmentsCol(db, appId), {
+      const queueToken = generateQueueToken(appointments);
+      const created = await addDoc(appointmentsCol(db, appId), {
         patientId: profile.uid,
         patientName: profile.name,
         patientEmail: profile.email,
+        queueToken,
         reason: cleanReason,
         status: "requested",
         createdAt: serverTimestamp(),
@@ -1684,6 +1853,11 @@ const PatientAppointmentsPage = ({ db, appId, profile }) => {
         updatedAt: serverTimestamp(),
         updatedAtClient: new Date().toISOString(),
         statusEvents: [appointmentEvent("requested", profile, "Patient requested consult")],
+      });
+      await writeAuditLog(db, appId, profile, "appointment_requested", "appointment", created.id, {
+        queueToken,
+        patientName: profile.name,
+        reason: cleanReason,
       });
       setReason("");
     } catch (requestError) {
@@ -1723,7 +1897,27 @@ const PatientAppointmentsPage = ({ db, appId, profile }) => {
         </Card>
 
         <Card>
-          <h2 className="text-lg font-bold text-gray-950">Patient History</h2>
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <h2 className="text-lg font-bold text-gray-950">Patient History</h2>
+            <div className="grid gap-2 sm:grid-cols-2">
+              <Input
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+                placeholder="Search token, doctor, reason"
+              />
+              <Select
+                value={statusFilter}
+                onChange={(event) => setStatusFilter(event.target.value)}
+              >
+                <option value="all">All statuses</option>
+                {Object.entries(APPOINTMENT_STATUS).map(([value, label]) => (
+                  <option key={value} value={value}>
+                    {label}
+                  </option>
+                ))}
+              </Select>
+            </div>
+          </div>
           <div className="mt-4 space-y-4">
             {patientAppointments.length === 0 ? (
               <EmptyState
@@ -1736,9 +1930,15 @@ const PatientAppointmentsPage = ({ db, appId, profile }) => {
                   <div className="flex flex-wrap items-start justify-between gap-3">
                     <div>
                       <p className="text-sm font-semibold text-gray-500">
-                        Created {formatDateTime(item.createdAt || item.createdAtClient)}
+                        {item.queueToken || "OPD pending"} - Created{" "}
+                        {formatDateTime(item.createdAt || item.createdAtClient)}
                       </p>
                       <h3 className="mt-1 font-bold text-gray-950">{item.reason}</h3>
+                      {ACTIVE_APPOINTMENT_STATUSES.includes(item.status) ? (
+                        <p className="mt-1 text-xs font-semibold text-blue-700">
+                          Waiting ahead: {getWaitingCountBefore(item, appointments)}
+                        </p>
+                      ) : null}
                     </div>
                     <Badge status={item.status}>
                       {APPOINTMENT_STATUS[item.status] || item.status}
@@ -1849,14 +2049,34 @@ const AttenderDashboard = ({ db, appId, profile }) => {
     ["artifacts", appId, "all_users"],
     Boolean(db && appId)
   );
+  const { items: availability } = useLiveCollection(
+    db,
+    ["artifacts", appId, "doctor_availability"],
+    Boolean(db && appId)
+  );
   const [scheduleForms, setScheduleForms] = useState({});
   const [vitalForms, setVitalForms] = useState({});
+  const [queueSearch, setQueueSearch] = useState("");
+  const [queueDate, setQueueDate] = useState("");
   const [busyId, setBusyId] = useState("");
   const approvedDoctors = users
     .filter((user) => user.role === "doctor" && user.status === "approved")
     .sort((a, b) => String(a.name).localeCompare(String(b.name)));
-  const requested = sortNewest(appointments.filter((item) => item.status === "requested"));
-  const scheduled = sortNewest(appointments.filter((item) => item.status === "scheduled"));
+  const requested = sortOldest(
+    appointments
+      .filter((item) => item.status === "requested")
+      .filter((item) => matchesAppointmentSearch(item, queueSearch))
+      .filter((item) => filterByDate(item, queueDate))
+  );
+  const scheduled = sortOldest(
+    appointments
+      .filter((item) => item.status === "scheduled")
+      .filter((item) => matchesAppointmentSearch(item, queueSearch))
+      .filter((item) => filterByDate(item, queueDate))
+  );
+  const activeWaiting = appointments.filter((item) =>
+    ACTIVE_APPOINTMENT_STATUSES.includes(item.status)
+  ).length;
 
   const updateScheduleForm = (id, key, value) =>
     setScheduleForms((state) => ({
@@ -1873,7 +2093,9 @@ const AttenderDashboard = ({ db, appId, profile }) => {
   const scheduleAppointment = async (appointment) => {
     const form = scheduleForms[appointment.id] || {};
     const doctor = approvedDoctors.find((item) => item.uid === form.doctorId);
-    if (!form.date || !form.time || !doctor) return;
+    const doctorAvailability = getAvailabilityForDoctor(availability, form.doctorId);
+    const availableSlots = getAvailableSlotsForDate(doctorAvailability, form.date);
+    if (!form.date || !form.time || !doctor || !availableSlots.includes(form.time)) return;
 
     setBusyId(appointment.id);
     try {
@@ -1894,8 +2116,15 @@ const AttenderDashboard = ({ db, appId, profile }) => {
       });
       await writeNotification(db, appId, appointment.patientId, {
         title: "Appointment scheduled",
-        message: `Your consult is scheduled on ${form.date} at ${form.time} with ${doctor.name}.`,
+        message: `${appointment.queueToken || "Your appointment"} is scheduled on ${form.date} at ${form.time} with ${doctor.name}.`,
         appointmentId: appointment.id,
+      });
+      await writeAuditLog(db, appId, profile, "appointment_scheduled", "appointment", appointment.id, {
+        queueToken: appointment.queueToken || "",
+        patientName: appointment.patientName,
+        doctorName: doctor.name,
+        scheduledDate: form.date,
+        scheduledTime: form.time,
       });
     } finally {
       setBusyId("");
@@ -1926,8 +2155,48 @@ const AttenderDashboard = ({ db, appId, profile }) => {
       });
       await writeNotification(db, appId, appointment.patientId, {
         title: "Vitals recorded",
-        message: "Your vitals have been recorded and the doctor queue is ready.",
+        message: `${appointment.queueToken || "Your appointment"} has vitals recorded and is ready for the doctor.`,
         appointmentId: appointment.id,
+      });
+      await writeAuditLog(db, appId, profile, "vitals_recorded", "appointment", appointment.id, {
+        queueToken: appointment.queueToken || "",
+        patientName: appointment.patientName,
+        vitals: {
+          bloodPressure: form.bloodPressure,
+          heartRate: form.heartRate,
+          glucose: form.glucose,
+        },
+      });
+    } finally {
+      setBusyId("");
+    }
+  };
+
+  const markAppointment = async (appointment, nextStatus) => {
+    const label = nextStatus === "no_show" ? "Marked no-show" : "Cancelled";
+    const busyKey = `${appointment.id}:${nextStatus}`;
+    setBusyId(busyKey);
+    try {
+      await updateDoc(doc(db, "artifacts", appId, "appointments", appointment.id), {
+        status: nextStatus,
+        closedBy: profile.uid,
+        closedByName: profile.name,
+        closedAt: serverTimestamp(),
+        closedAtClient: new Date().toISOString(),
+        updatedAt: serverTimestamp(),
+        updatedAtClient: new Date().toISOString(),
+        statusEvents: arrayUnion(appointmentEvent(nextStatus, profile, label)),
+      });
+      await writeNotification(db, appId, appointment.patientId, {
+        title: APPOINTMENT_STATUS[nextStatus],
+        message: `${appointment.queueToken || "Your appointment"} has been ${nextStatus === "no_show" ? "marked as no-show" : "cancelled"}.`,
+        appointmentId: appointment.id,
+      });
+      await writeAuditLog(db, appId, profile, `appointment_${nextStatus}`, "appointment", appointment.id, {
+        queueToken: appointment.queueToken || "",
+        patientName: appointment.patientName,
+        previousStatus: appointment.status,
+        nextStatus,
       });
     } finally {
       setBusyId("");
@@ -1939,6 +2208,26 @@ const AttenderDashboard = ({ db, appId, profile }) => {
       title="Attender Queue"
       subtitle="Schedule requested consults, assign approved doctors, and record vitals on arrival."
     >
+      <div className="mb-6 grid gap-4 md:grid-cols-4">
+        <StatCard label="Waiting now" value={activeWaiting} icon="clipboard" tone="blue" />
+        <StatCard label="Requested" value={requested.length} icon="calendar" tone="amber" />
+        <StatCard label="Arrivals" value={scheduled.length} icon="hospital" tone="green" />
+        <Card className="p-4">
+          <div className="grid gap-3 sm:grid-cols-2 md:grid-cols-1">
+            <Input
+              value={queueSearch}
+              onChange={(event) => setQueueSearch(event.target.value)}
+              placeholder="Search patient, token, doctor"
+            />
+            <Input
+              type="date"
+              value={queueDate}
+              onChange={(event) => setQueueDate(event.target.value)}
+            />
+          </div>
+        </Card>
+      </div>
+
       <div className="grid gap-6 xl:grid-cols-2">
         <Card>
           <h2 className="text-lg font-bold text-gray-950">Requested Appointments</h2>
@@ -1959,31 +2248,28 @@ const AttenderDashboard = ({ db, appId, profile }) => {
             ) : (
               requested.map((item) => {
                 const form = scheduleForms[item.id] || {};
+                const selectedAvailability = getAvailabilityForDoctor(availability, form.doctorId);
+                const availableSlots = getAvailableSlotsForDate(selectedAvailability, form.date);
                 return (
                   <div key={item.id} className="rounded-lg border border-gray-200 p-4">
                     <div className="flex flex-wrap justify-between gap-3">
                       <div>
-                        <p className="font-bold text-gray-950">{item.patientName}</p>
+                        <p className="text-xs font-bold text-blue-700">
+                          {item.queueToken || "OPD pending"} - Waiting ahead:{" "}
+                          {getWaitingCountBefore(item, appointments)}
+                        </p>
+                        <p className="mt-1 font-bold text-gray-950">{item.patientName}</p>
                         <p className="mt-1 text-sm text-gray-600">{item.reason}</p>
                       </div>
                       <Badge status={item.status}>{APPOINTMENT_STATUS[item.status]}</Badge>
                     </div>
                     <div className="mt-4 grid gap-3 md:grid-cols-3">
-                      <Input
-                        type="date"
-                        value={form.date || ""}
-                        onChange={(event) => updateScheduleForm(item.id, "date", event.target.value)}
-                      />
-                      <Input
-                        type="time"
-                        value={form.time || ""}
-                        onChange={(event) => updateScheduleForm(item.id, "time", event.target.value)}
-                      />
                       <Select
                         value={form.doctorId || ""}
-                        onChange={(event) =>
-                          updateScheduleForm(item.id, "doctorId", event.target.value)
-                        }
+                        onChange={(event) => {
+                          updateScheduleForm(item.id, "doctorId", event.target.value);
+                          updateScheduleForm(item.id, "time", "");
+                        }}
                       >
                         <option value="">Select doctor</option>
                         {approvedDoctors.map((doctor) => (
@@ -1992,16 +2278,58 @@ const AttenderDashboard = ({ db, appId, profile }) => {
                           </option>
                         ))}
                       </Select>
+                      <Input
+                        type="date"
+                        value={form.date || ""}
+                        onChange={(event) => {
+                          updateScheduleForm(item.id, "date", event.target.value);
+                          updateScheduleForm(item.id, "time", "");
+                        }}
+                      />
+                      <Select
+                        value={form.time || ""}
+                        onChange={(event) => updateScheduleForm(item.id, "time", event.target.value)}
+                        disabled={!form.doctorId || !form.date || availableSlots.length === 0}
+                      >
+                        <option value="">
+                          {!form.doctorId
+                            ? "Select doctor first"
+                            : !form.date
+                              ? "Select date first"
+                              : availableSlots.length === 0
+                                ? "No slots for date"
+                                : "Select time"}
+                        </option>
+                        {availableSlots.map((slot) => (
+                          <option key={slot} value={slot}>
+                            {slot}
+                          </option>
+                        ))}
+                      </Select>
                     </div>
-                    <Button
-                      type="button"
-                      className="mt-4"
-                      loading={busyId === item.id}
-                      disabled={!form.date || !form.time || !form.doctorId}
-                      onClick={() => scheduleAppointment(item)}
-                    >
-                      Schedule
-                    </Button>
+                    {form.doctorId && form.date && availableSlots.length === 0 ? (
+                      <p className="mt-3 text-xs font-semibold text-amber-700">
+                        The selected doctor has no availability on {getDateDayName(form.date)}.
+                      </p>
+                    ) : null}
+                    <div className="mt-4 flex flex-wrap gap-2">
+                      <Button
+                        type="button"
+                        loading={busyId === item.id}
+                        disabled={!form.date || !form.time || !form.doctorId}
+                        onClick={() => scheduleAppointment(item)}
+                      >
+                        Schedule
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        loading={busyId === `${item.id}:cancelled`}
+                        onClick={() => markAppointment(item, "cancelled")}
+                      >
+                        Cancel
+                      </Button>
+                    </div>
                   </div>
                 );
               })
@@ -2021,7 +2349,11 @@ const AttenderDashboard = ({ db, appId, profile }) => {
                   <div key={item.id} className="rounded-lg border border-gray-200 p-4">
                     <div className="flex flex-wrap justify-between gap-3">
                       <div>
-                        <p className="font-bold text-gray-950">{item.patientName}</p>
+                        <p className="text-xs font-bold text-blue-700">
+                          {item.queueToken || "OPD pending"} - Waiting ahead:{" "}
+                          {getWaitingCountBefore(item, appointments)}
+                        </p>
+                        <p className="mt-1 font-bold text-gray-950">{item.patientName}</p>
                         <p className="mt-1 text-sm text-gray-600">
                           {item.scheduledDate} at {item.scheduledTime} with {item.doctorName}
                         </p>
@@ -2051,16 +2383,33 @@ const AttenderDashboard = ({ db, appId, profile }) => {
                         }
                       />
                     </div>
-                    <Button
-                      type="button"
-                      className="mt-4"
-                      variant="success"
-                      loading={busyId === item.id}
-                      disabled={!form.bloodPressure || !form.heartRate || !form.glucose}
-                      onClick={() => recordVitals(item)}
-                    >
-                      Record Vitals
-                    </Button>
+                    <div className="mt-4 flex flex-wrap gap-2">
+                      <Button
+                        type="button"
+                        variant="success"
+                        loading={busyId === item.id}
+                        disabled={!form.bloodPressure || !form.heartRate || !form.glucose}
+                        onClick={() => recordVitals(item)}
+                      >
+                        Record Vitals
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        loading={busyId === `${item.id}:no_show`}
+                        onClick={() => markAppointment(item, "no_show")}
+                      >
+                        No-show
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        loading={busyId === `${item.id}:cancelled`}
+                        onClick={() => markAppointment(item, "cancelled")}
+                      >
+                        Cancel
+                      </Button>
+                    </div>
                   </div>
                 );
               })
@@ -2080,9 +2429,12 @@ const DoctorDashboard = ({ db, appId, profile }) => {
   );
   const [activeId, setActiveId] = useState("");
   const [notes, setNotes] = useState("");
+  const [search, setSearch] = useState("");
   const [busy, setBusy] = useState(false);
   const queue = sortNewest(
-    appointments.filter((item) => item.status === "ready" && item.doctorId === profile.uid)
+    appointments
+      .filter((item) => item.status === "ready" && item.doctorId === profile.uid)
+      .filter((item) => matchesAppointmentSearch(item, search))
   );
   const activeAppointment = queue.find((item) => item.id === activeId);
 
@@ -2110,8 +2462,18 @@ const DoctorDashboard = ({ db, appId, profile }) => {
       });
       await writeNotification(db, appId, activeAppointment.patientId, {
         title: "Consultation completed",
-        message: `Dr. ${profile.name} has completed your consultation notes.`,
+        message: `${activeAppointment.queueToken || "Your appointment"} has consultation notes from Dr. ${profile.name}.`,
         appointmentId: activeAppointment.id,
+      });
+      await writeAuditLog(db, appId, profile, "consultation_completed", "appointment", activeAppointment.id, {
+        queueToken: activeAppointment.queueToken || "",
+        patientName: activeAppointment.patientName,
+        doctorName: profile.name,
+      });
+      await writeAuditLog(db, appId, profile, "prescription_updated", "appointment", activeAppointment.id, {
+        queueToken: activeAppointment.queueToken || "",
+        patientName: activeAppointment.patientName,
+        noteLength: notes.trim().length,
       });
       setActiveId("");
       setNotes("");
@@ -2127,7 +2489,14 @@ const DoctorDashboard = ({ db, appId, profile }) => {
     >
       <div className="grid gap-6 lg:grid-cols-[0.9fr_1.1fr]">
         <Card>
-          <h2 className="text-lg font-bold text-gray-950">Ready Queue</h2>
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <h2 className="text-lg font-bold text-gray-950">Ready Queue</h2>
+            <Input
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+              placeholder="Search patient, token, reason"
+            />
+          </div>
           <div className="mt-4 space-y-3">
             {queue.length === 0 ? (
               <EmptyState title="No ready appointments assigned to you" />
@@ -2145,7 +2514,10 @@ const DoctorDashboard = ({ db, appId, profile }) => {
                 >
                   <div className="flex items-start justify-between gap-3">
                     <div>
-                      <p className="font-bold text-gray-950">{item.patientName}</p>
+                      <p className="text-xs font-bold text-blue-700">
+                        {item.queueToken || "OPD pending"}
+                      </p>
+                      <p className="mt-1 font-bold text-gray-950">{item.patientName}</p>
                       <p className="mt-1 text-sm text-gray-600">{item.reason}</p>
                     </div>
                     <Badge status={item.status}>{APPOINTMENT_STATUS[item.status]}</Badge>
@@ -2165,6 +2537,9 @@ const DoctorDashboard = ({ db, appId, profile }) => {
               <div className="rounded-lg bg-gray-50 p-4 text-sm text-gray-700">
                 <p>
                   <strong>Patient:</strong> {activeAppointment.patientName}
+                </p>
+                <p className="mt-2">
+                  <strong>Token:</strong> {activeAppointment.queueToken || "N/A"}
                 </p>
                 <p className="mt-2">
                   <strong>Reason:</strong> {activeAppointment.reason}
@@ -2206,13 +2581,18 @@ const DoctorDashboard = ({ db, appId, profile }) => {
 };
 
 const DoctorHistory = ({ db, appId, profile }) => {
+  const [search, setSearch] = useState("");
+  const [dateFilter, setDateFilter] = useState("");
   const { items: appointments } = useLiveCollection(
     db,
     ["artifacts", appId, "appointments"],
     Boolean(db && appId)
   );
   const completed = sortNewest(
-    appointments.filter((item) => item.status === "completed" && item.doctorId === profile.uid)
+    appointments
+      .filter((item) => item.status === "completed" && item.doctorId === profile.uid)
+      .filter((item) => matchesAppointmentSearch(item, search))
+      .filter((item) => filterByDate(item, dateFilter))
   );
 
   return (
@@ -2221,6 +2601,18 @@ const DoctorHistory = ({ db, appId, profile }) => {
       subtitle="Completed consultations assigned to your doctor account."
     >
       <Card>
+        <div className="mb-4 grid gap-3 sm:grid-cols-2">
+          <Input
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+            placeholder="Search patient, token, reason"
+          />
+          <Input
+            type="date"
+            value={dateFilter}
+            onChange={(event) => setDateFilter(event.target.value)}
+          />
+        </div>
         <div className="space-y-4">
           {completed.length === 0 ? (
             <EmptyState title="No completed consultations yet" />
@@ -2229,7 +2621,10 @@ const DoctorHistory = ({ db, appId, profile }) => {
               <div key={item.id} className="rounded-lg border border-gray-200 p-4">
                 <div className="flex flex-wrap justify-between gap-3">
                   <div>
-                    <p className="font-bold text-gray-950">{item.patientName}</p>
+                    <p className="text-xs font-bold text-blue-700">
+                      {item.queueToken || "OPD pending"}
+                    </p>
+                    <p className="mt-1 font-bold text-gray-950">{item.patientName}</p>
                     <p className="mt-1 text-sm text-gray-600">{item.reason}</p>
                   </div>
                   <Badge status="completed">Completed</Badge>
@@ -2246,6 +2641,221 @@ const DoctorHistory = ({ db, appId, profile }) => {
           )}
         </div>
       </Card>
+    </Page>
+  );
+};
+
+const DoctorAvailabilityPage = ({ db, appId, profile }) => {
+  const isAdmin = profile.role === "admin";
+  const { items: users } = useLiveCollection(
+    db,
+    ["artifacts", appId, "all_users"],
+    Boolean(db && appId && isAdmin)
+  );
+  const { items: availability } = useLiveCollection(
+    db,
+    ["artifacts", appId, "doctor_availability"],
+    Boolean(db && appId)
+  );
+  const approvedDoctors = users
+    .filter((user) => user.role === "doctor" && user.status === "approved")
+    .sort((a, b) => String(a.name).localeCompare(String(b.name)));
+  const [selectedDoctorId, setSelectedDoctorId] = useState(isAdmin ? "" : profile.uid);
+  const [days, setDays] = useState([]);
+  const [slotsText, setSlotsText] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (isAdmin && !selectedDoctorId && approvedDoctors.length > 0) {
+      setSelectedDoctorId(approvedDoctors[0].uid);
+    }
+  }, [isAdmin, selectedDoctorId, approvedDoctors]);
+
+  const selectedDoctor = isAdmin
+    ? approvedDoctors.find((doctor) => doctor.uid === selectedDoctorId)
+    : profile;
+  const currentAvailability = getAvailabilityForDoctor(availability, selectedDoctorId);
+
+  useEffect(() => {
+    if (!selectedDoctorId) return;
+    setDays(Array.isArray(currentAvailability?.days) ? currentAvailability.days : []);
+    setSlotsText(
+      Array.isArray(currentAvailability?.slots)
+        ? currentAvailability.slots.join(", ")
+        : "09:00, 10:00, 11:00, 14:00, 15:00"
+    );
+  }, [selectedDoctorId, currentAvailability?.updatedAtClient]);
+
+  const toggleDay = (day) => {
+    setDays((items) =>
+      items.includes(day) ? items.filter((item) => item !== day) : [...items, day]
+    );
+  };
+
+  const saveAvailability = async (event) => {
+    event.preventDefault();
+    setMessage("");
+    setError("");
+    if (!selectedDoctorId || !selectedDoctor) {
+      setError("Select a doctor first.");
+      return;
+    }
+    const slots = normalizeSlots(slotsText);
+    if (days.length === 0 || slots.length === 0) {
+      setError("Choose at least one day and one time slot.");
+      return;
+    }
+
+    setSaving(true);
+    try {
+      await setDoc(
+        doctorAvailabilityRef(db, appId, selectedDoctorId),
+        {
+          doctorId: selectedDoctorId,
+          doctorName: selectedDoctor.name,
+          doctorEmail: selectedDoctor.email || "",
+          days: [...days].sort((a, b) => WEEKDAYS.indexOf(a) - WEEKDAYS.indexOf(b)),
+          slots,
+          updatedBy: profile.uid,
+          updatedByName: profile.name,
+          updatedAt: serverTimestamp(),
+          updatedAtClient: new Date().toISOString(),
+        },
+        { merge: true }
+      );
+      await writeAuditLog(db, appId, profile, "doctor_availability_updated", "doctor", selectedDoctorId, {
+        doctorName: selectedDoctor.name,
+        days,
+        slots,
+      });
+      setMessage("Availability saved.");
+    } catch (saveError) {
+      setError(saveError.message || "Could not save availability.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Page
+      title="Doctor Availability"
+      subtitle="Set valid consulting days and time slots used by attenders while scheduling."
+    >
+      <div className="grid gap-6 lg:grid-cols-[0.9fr_1.1fr]">
+        <Card>
+          <h2 className="text-lg font-bold text-gray-950">Availability Setup</h2>
+          <form className="mt-4 space-y-4" onSubmit={saveAvailability}>
+            {isAdmin ? (
+              <Field label="Doctor">
+                <Select
+                  value={selectedDoctorId}
+                  onChange={(event) => setSelectedDoctorId(event.target.value)}
+                >
+                  <option value="">Select doctor</option>
+                  {approvedDoctors.map((doctor) => (
+                    <option key={doctor.uid} value={doctor.uid}>
+                      {doctor.name}
+                    </option>
+                  ))}
+                </Select>
+              </Field>
+            ) : (
+              <div className="rounded-lg bg-blue-50 p-3 text-sm text-blue-800">
+                Updating availability for Dr. {profile.name}
+              </div>
+            )}
+
+            <Field label="Available Days">
+              <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                {WEEKDAYS.map((day) => (
+                  <label
+                    key={day}
+                    className={`flex cursor-pointer items-center gap-2 rounded-lg border px-3 py-2 text-sm font-semibold ${
+                      days.includes(day)
+                        ? "border-blue-500 bg-blue-50 text-blue-800"
+                        : "border-gray-200 bg-white text-gray-700"
+                    }`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={days.includes(day)}
+                      onChange={() => toggleDay(day)}
+                    />
+                    {day}
+                  </label>
+                ))}
+              </div>
+            </Field>
+
+            <Field label="Time Slots">
+              <Input
+                value={slotsText}
+                onChange={(event) => setSlotsText(event.target.value)}
+                placeholder="09:00, 10:00, 11:00, 14:00"
+              />
+            </Field>
+
+            {message ? (
+              <div className="rounded-lg border border-green-200 bg-green-50 p-3 text-sm text-green-700">
+                {message}
+              </div>
+            ) : null}
+            {error ? (
+              <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+                {error}
+              </div>
+            ) : null}
+
+            <Button type="submit" loading={saving}>
+              Save Availability
+            </Button>
+          </form>
+        </Card>
+
+        <Card>
+          <h2 className="text-lg font-bold text-gray-950">Current Schedule Rules</h2>
+          {!selectedDoctor ? (
+            <EmptyState title="No doctor selected" body="Approve a doctor, then select them here." />
+          ) : (
+            <div className="mt-4 space-y-4">
+              <div className="rounded-lg border border-gray-200 p-4">
+                <p className="font-bold text-gray-950">{selectedDoctor.name}</p>
+                <p className="text-sm text-gray-500">{selectedDoctor.email}</p>
+              </div>
+              <div>
+                <p className="text-sm font-bold text-gray-700">Days</p>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {(currentAvailability?.days || days).length === 0 ? (
+                    <span className="text-sm text-gray-500">No days set.</span>
+                  ) : (
+                    (currentAvailability?.days || days).map((day) => (
+                      <Badge key={day} status="scheduled">
+                        {day}
+                      </Badge>
+                    ))
+                  )}
+                </div>
+              </div>
+              <div>
+                <p className="text-sm font-bold text-gray-700">Slots</p>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {(currentAvailability?.slots || normalizeSlots(slotsText)).length === 0 ? (
+                    <span className="text-sm text-gray-500">No slots set.</span>
+                  ) : (
+                    (currentAvailability?.slots || normalizeSlots(slotsText)).map((slot) => (
+                      <Badge key={slot} status="approved">
+                        {slot}
+                      </Badge>
+                    ))
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+        </Card>
+      </div>
     </Page>
   );
 };
@@ -2320,7 +2930,88 @@ const AdminDashboard = ({ db, appId }) => {
   );
 };
 
+const AdminAnalytics = ({ db, appId }) => {
+  const { items: appointments } = useLiveCollection(
+    db,
+    ["artifacts", appId, "appointments"],
+    Boolean(db && appId)
+  );
+
+  const countBy = (items, keyFn) =>
+    items.reduce((acc, item) => {
+      const key = keyFn(item) || "Unknown";
+      acc[key] = (acc[key] || 0) + 1;
+      return acc;
+    }, {});
+
+  const toChartData = (counts, limit = 10, ascending = false) =>
+    Object.entries(counts)
+      .map(([label, value]) => ({ label, value }))
+      .sort((a, b) =>
+        ascending ? String(a.label).localeCompare(String(b.label)) : b.value - a.value
+      )
+      .slice(0, limit);
+
+  const createdDate = (item) => {
+    const millis = getCreatedMillis(item);
+    return millis ? new Date(millis).toISOString().slice(0, 10) : "Unknown";
+  };
+
+  const completedDate = (item) => {
+    const millis = asMillis(item.completedAt) || asMillis(item.completedAtClient);
+    return millis ? new Date(millis).toISOString().slice(0, 10) : "Unknown";
+  };
+
+  const dailyAppointments = toChartData(countBy(appointments, createdDate), 14, true);
+  const completedConsults = toChartData(
+    countBy(appointments.filter((item) => item.status === "completed"), completedDate),
+    14,
+    true
+  );
+  const pendingQueues = ACTIVE_APPOINTMENT_STATUSES.map((status) => ({
+    label: APPOINTMENT_STATUS[status],
+    value: appointments.filter((item) => item.status === status).length,
+  }));
+  const doctorWorkload = toChartData(
+    countBy(
+      appointments.filter((item) => item.status === "completed"),
+      (item) => item.doctorName || "Unassigned"
+    ),
+    10
+  );
+
+  const noShowCount = appointments.filter((item) => item.status === "no_show").length;
+  const cancelledCount = appointments.filter((item) => item.status === "cancelled").length;
+
+  return (
+    <Page
+      title="Analytics"
+      subtitle="Operational charts for appointment volume, completed consults, queues, and workload."
+    >
+      <div className="mb-6 grid gap-4 md:grid-cols-4">
+        <StatCard label="Total appointments" value={appointments.length} icon="calendar" tone="blue" />
+        <StatCard
+          label="Completed"
+          value={appointments.filter((item) => item.status === "completed").length}
+          icon="checkCircle"
+          tone="green"
+        />
+        <StatCard label="No-shows" value={noShowCount} icon="alertTriangle" tone="amber" />
+        <StatCard label="Cancelled" value={cancelledCount} icon="x" tone="gray" />
+      </div>
+
+      <div className="grid gap-6 lg:grid-cols-2">
+        <BarChart title="Daily Appointments" data={dailyAppointments} />
+        <BarChart title="Completed Consults" data={completedConsults} />
+        <BarChart title="Pending Queue Breakdown" data={pendingQueues} />
+        <BarChart title="Doctor Workload" data={doctorWorkload} />
+      </div>
+    </Page>
+  );
+};
+
 const AdminApprovals = ({ db, appId, profile }) => {
+  const [search, setSearch] = useState("");
   const { items: users } = useLiveCollection(
     db,
     ["artifacts", appId, "all_users"],
@@ -2329,6 +3020,14 @@ const AdminApprovals = ({ db, appId, profile }) => {
   const [busyId, setBusyId] = useState("");
   const pending = users
     .filter((item) => item.status === "pending")
+    .filter((item) => {
+      const queryText = normalizeSearch(search);
+      if (!queryText) return true;
+      return [item.name, item.email, item.role, item.phone]
+        .join(" ")
+        .toLowerCase()
+        .includes(queryText);
+    })
     .sort((a, b) => String(a.role).localeCompare(String(b.role)));
 
   const approve = async (user) => {
@@ -2340,13 +3039,28 @@ const AdminApprovals = ({ db, appId, profile }) => {
         approvedByName: profile.name,
         approvedAtClient: new Date().toISOString(),
       });
+      await writeAuditLog(db, appId, profile, "user_approved", "user", user.uid, {
+        approvedUserName: user.name,
+        approvedUserRole: user.role,
+        approvedUserEmail: user.email,
+      });
     } finally {
       setBusyId("");
     }
   };
 
   return (
-    <Page title="Admin Approvals" subtitle="Approve pending doctors, attenders, and additional admins.">
+    <Page
+      title="Admin Approvals"
+      subtitle="Approve pending doctors, attenders, and additional admins."
+      actions={
+        <Input
+          value={search}
+          onChange={(event) => setSearch(event.target.value)}
+          placeholder="Search pending users"
+        />
+      }
+    >
       <Card className="overflow-hidden p-0">
         <div className="overflow-x-auto">
           <table className="min-w-full divide-y divide-gray-200 text-sm">
@@ -2403,6 +3117,8 @@ const AdminApprovals = ({ db, appId, profile }) => {
 
 const AdminUsersDirectory = ({ db, appId }) => {
   const [roleFilter, setRoleFilter] = useState("all");
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [search, setSearch] = useState("");
   const { items: users } = useLiveCollection(
     db,
     ["artifacts", appId, "all_users"],
@@ -2410,6 +3126,15 @@ const AdminUsersDirectory = ({ db, appId }) => {
   );
   const filteredUsers = users
     .filter((user) => roleFilter === "all" || user.role === roleFilter)
+    .filter((user) => statusFilter === "all" || user.status === statusFilter)
+    .filter((user) => {
+      const queryText = normalizeSearch(search);
+      if (!queryText) return true;
+      return [user.name, user.email, user.phone, user.role, user.status, user.gender]
+        .join(" ")
+        .toLowerCase()
+        .includes(queryText);
+    })
     .sort((a, b) => String(a.name).localeCompare(String(b.name)));
 
   return (
@@ -2417,13 +3142,26 @@ const AdminUsersDirectory = ({ db, appId }) => {
       title="Users Directory"
       subtitle="Master list of every registered user from artifacts/{appId}/all_users."
       actions={
-        <Select value={roleFilter} onChange={(event) => setRoleFilter(event.target.value)}>
-          <option value="all">All roles</option>
-          <option value="patient">Patients</option>
-          <option value="doctor">Doctors</option>
-          <option value="attender">Attenders</option>
-          <option value="admin">Admins</option>
-        </Select>
+        <>
+          <Input
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+            placeholder="Search users"
+          />
+          <Select value={roleFilter} onChange={(event) => setRoleFilter(event.target.value)}>
+            <option value="all">All roles</option>
+            <option value="patient">Patients</option>
+            <option value="doctor">Doctors</option>
+            <option value="attender">Attenders</option>
+            <option value="admin">Admins</option>
+          </Select>
+          <Select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}>
+            <option value="all">All statuses</option>
+            <option value="approved">Approved</option>
+            <option value="pending">Pending</option>
+            <option value="rejected">Rejected</option>
+          </Select>
+        </>
       }
     >
       <Card className="overflow-hidden p-0">
@@ -2463,19 +3201,74 @@ const AdminUsersDirectory = ({ db, appId }) => {
 };
 
 const AdminSystemLog = ({ db, appId }) => {
+  const [search, setSearch] = useState("");
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [dateFilter, setDateFilter] = useState("");
   const { items: appointments } = useLiveCollection(
     db,
     ["artifacts", appId, "appointments"],
     Boolean(db && appId)
   );
-  const ordered = sortNewest(appointments);
+  const { items: auditLogs } = useLiveCollection(
+    db,
+    ["artifacts", appId, "audit_logs"],
+    Boolean(db && appId)
+  );
+  const ordered = sortNewest(
+    appointments
+      .filter((item) => statusFilter === "all" || item.status === statusFilter)
+      .filter((item) => matchesAppointmentSearch(item, search))
+      .filter((item) => filterByDate(item, dateFilter))
+  );
+  const orderedAudit = sortNewest(
+    auditLogs
+      .filter((item) => {
+        const queryText = normalizeSearch(search);
+        if (!queryText) return true;
+        return [
+          item.action,
+          item.targetType,
+          item.targetId,
+          item.actor?.name,
+          item.actor?.email,
+          JSON.stringify(item.details || {}),
+        ]
+          .join(" ")
+          .toLowerCase()
+          .includes(queryText);
+      })
+      .filter((item) => filterByDate(item, dateFilter))
+  );
 
   return (
     <Page
       title="System Log"
-      subtitle="Global chronological history of appointments created on the platform."
+      subtitle="Global appointment history and audit trail for approvals, profile updates, and appointment edits."
+      actions={
+        <>
+          <Input
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+            placeholder="Search logs"
+          />
+          <Select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}>
+            <option value="all">All appointment statuses</option>
+            {Object.entries(APPOINTMENT_STATUS).map(([value, label]) => (
+              <option key={value} value={value}>
+                {label}
+              </option>
+            ))}
+          </Select>
+          <Input
+            type="date"
+            value={dateFilter}
+            onChange={(event) => setDateFilter(event.target.value)}
+          />
+        </>
+      }
     >
       <Card>
+        <h2 className="mb-4 text-lg font-bold text-gray-950">Appointment History</h2>
         <div className="space-y-4">
           {ordered.length === 0 ? (
             <EmptyState title="No appointments have been created yet" />
@@ -2487,7 +3280,9 @@ const AdminSystemLog = ({ db, appId }) => {
                     <p className="text-sm font-semibold text-gray-500">
                       {formatDateTime(item.createdAt || item.createdAtClient)}
                     </p>
-                    <h3 className="mt-1 font-bold text-gray-950">{item.patientName}</h3>
+                    <h3 className="mt-1 font-bold text-gray-950">
+                      {item.queueToken || "OPD pending"} - {item.patientName}
+                    </h3>
                     <p className="mt-1 text-sm text-gray-600">{item.reason}</p>
                   </div>
                   <Badge status={item.status}>{APPOINTMENT_STATUS[item.status] || item.status}</Badge>
@@ -2523,6 +3318,37 @@ const AdminSystemLog = ({ db, appId }) => {
                       ))}
                     </div>
                   </div>
+                ) : null}
+              </div>
+            ))
+          )}
+        </div>
+      </Card>
+      <Card className="mt-6">
+        <h2 className="mb-4 text-lg font-bold text-gray-950">Audit Trail</h2>
+        <div className="space-y-3">
+          {orderedAudit.length === 0 ? (
+            <EmptyState title="No audit entries found" />
+          ) : (
+            orderedAudit.slice(0, 100).map((item) => (
+              <div key={item.id} className="rounded-lg border border-gray-200 p-4">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <p className="text-xs font-semibold text-gray-500">
+                      {formatDateTime(item.createdAt || item.createdAtClient)}
+                    </p>
+                    <p className="mt-1 font-bold text-gray-950">{item.action}</p>
+                    <p className="mt-1 text-sm text-gray-600">
+                      {item.actor?.name || "System"} acted on {item.targetType}{" "}
+                      {item.targetId || ""}
+                    </p>
+                  </div>
+                  <Badge status="scheduled">{item.targetType || "log"}</Badge>
+                </div>
+                {item.details ? (
+                  <pre className="mt-3 max-h-40 overflow-auto rounded-lg bg-gray-50 p-3 text-xs text-gray-700">
+                    {JSON.stringify(item.details, null, 2)}
+                  </pre>
                 ) : null}
               </div>
             ))
@@ -2567,6 +3393,9 @@ const ProfilePage = ({ auth, db, appId, profile }) => {
         await updateProfile(auth.currentUser, { displayName: form.name });
       }
       await updateProfileDocuments(db, appId, profile.uid, form);
+      await writeAuditLog(db, appId, profile, "profile_updated", "user", profile.uid, {
+        changedFields: Object.keys(form),
+      });
       setMessage("Profile updated.");
     } catch (saveError) {
       setError(saveError.message || "Could not update profile.");
@@ -2811,6 +3640,15 @@ const MissingProfileSetupPage = ({ db, appId, user, onComplete, onLogout }) => {
         ...form,
         status,
       });
+      await writeAuditLog(
+        db,
+        appId,
+        { uid: user.uid, name: form.name, role: form.role, email: user.email },
+        "profile_created",
+        "user",
+        user.uid,
+        { role: form.role, status, recoveredMissingProfile: true }
+      );
       onComplete({ id: user.uid, uid: user.uid, ...profile });
     } catch (setupError) {
       setError(setupError.message || "Could not create your profile.");
@@ -2950,7 +3788,7 @@ const App = () => {
     try {
       const saved = window.localStorage.getItem("vaidya-mithra-theme");
       if (saved) return saved === "dark";
-      return window.matchMedia?.("(prefers-color-scheme: dark)")?.matches || false;
+      return false;
     } catch (error) {
       return false;
     }
@@ -3120,6 +3958,15 @@ const App = () => {
         role: "admin",
         status: "approved",
       });
+      await writeAuditLog(
+        db,
+        appId,
+        { uid: credential.user.uid, name: "Super Admin", role: "admin", email: credential.user.email },
+        "super_admin_bootstrap",
+        "user",
+        credential.user.uid,
+        { email: credential.user.email }
+      );
       setPage("adminDashboard");
       return;
     }
@@ -3146,6 +3993,15 @@ const App = () => {
       role,
       status,
     });
+    await writeAuditLog(
+      db,
+      appId,
+      { uid: credential.user.uid, name: form.name, role, email: credential.user.email },
+      "profile_created",
+      "user",
+      credential.user.uid,
+      { role, status }
+    );
     setPage(status === "approved" ? defaultPageForRole(role) : "pending");
   };
 
@@ -3189,8 +4045,12 @@ const App = () => {
         return <DoctorDashboard {...shared} />;
       case "doctorHistory":
         return <DoctorHistory {...shared} />;
+      case "availability":
+        return <DoctorAvailabilityPage {...shared} />;
       case "adminDashboard":
         return <AdminDashboard db={db} appId={appId} />;
+      case "analytics":
+        return <AdminAnalytics db={db} appId={appId} />;
       case "approvals":
         return <AdminApprovals {...shared} />;
       case "users":
