@@ -1055,13 +1055,16 @@ const AuthPage = ({ firebaseError, onLogin, onSignup }) => {
   );
 };
 
-const PendingApprovalPage = ({ profile, onLogout }) => (
-  <div className="grid h-screen place-items-center bg-gradient-to-br from-blue-50 via-white to-amber-50 px-4">
-    <Card className="max-w-lg text-center">
+const PendingApprovalPage = ({ profile }) => (
+  <Page
+    title="Wait for confirmation"
+    subtitle="Your approval status is watched in real time. Once an admin approves you, the dashboard opens automatically."
+  >
+    <Card className="mx-auto max-w-2xl text-center">
       <div className="mx-auto grid h-14 w-14 place-items-center rounded-lg bg-amber-100 text-amber-700">
         <Icon name="history" size={28} />
       </div>
-      <h1 className="mt-5 text-2xl font-bold text-gray-950">Wait for confirmation</h1>
+      <h2 className="mt-5 text-2xl font-bold text-gray-950">Your account is pending</h2>
       <p className="mt-3 text-sm leading-6 text-gray-600">
         Your {ROLE_LABELS[profile.role]} account is saved with status{" "}
         <strong>{STATUS_LABELS[profile.status] || profile.status}</strong>. An
@@ -1080,12 +1083,8 @@ const PendingApprovalPage = ({ profile, onLogout }) => (
           <strong>Role:</strong> {ROLE_LABELS[profile.role]}
         </p>
       </div>
-      <Button type="button" variant="secondary" className="mt-6" onClick={onLogout}>
-        <Icon name="logOut" size={16} />
-        Sign out
-      </Button>
     </Card>
-  </div>
+  </Page>
 );
 
 const PatientHomePage = ({ profile, onNavigate }) => (
@@ -2499,6 +2498,61 @@ const SupportPage = () => (
   </Page>
 );
 
+const PendingNavBar = ({ currentPage, onNavigate, onLogout }) => {
+  const links = [
+    { id: "pending", label: "Wait", icon: "history" },
+    { id: "profile", label: "Profile", icon: "user" },
+    { id: "support", label: "Support", icon: "mail" },
+  ];
+
+  return (
+    <nav className="z-20 flex-shrink-0 border-b border-gray-200 bg-white/95 shadow-sm backdrop-blur">
+      <div className="mx-auto flex h-16 max-w-7xl items-center justify-between gap-4 px-4 sm:px-6 lg:px-8">
+        <Logo />
+        <div className="flex items-center gap-1">
+          {links.map((link) => (
+            <button
+              key={link.id}
+              type="button"
+              onClick={() => onNavigate(link.id)}
+              className={`inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-semibold transition ${
+                currentPage === link.id
+                  ? "bg-amber-100 text-amber-800"
+                  : "text-gray-700 hover:bg-gray-100"
+              }`}
+            >
+              <Icon name={link.icon} size={17} />
+              <span className="hidden sm:inline">{link.label}</span>
+            </button>
+          ))}
+          <Button type="button" size="icon" variant="ghost" onClick={onLogout} title="Sign out">
+            <Icon name="logOut" size={20} />
+          </Button>
+        </div>
+      </div>
+    </nav>
+  );
+};
+
+const PendingLayout = ({ auth, db, appId, profile, currentPage, onNavigate, onLogout }) => {
+  const pageToRender =
+    currentPage === "profile" ? (
+      <ProfilePage auth={auth} db={db} appId={appId} profile={profile} />
+    ) : currentPage === "support" ? (
+      <SupportPage />
+    ) : (
+      <PendingApprovalPage profile={profile} />
+    );
+
+  return (
+    <div className="flex h-screen w-screen flex-col overflow-hidden bg-gradient-to-br from-blue-50 via-white to-amber-50 font-sans text-gray-900">
+      <PendingNavBar currentPage={currentPage} onNavigate={onNavigate} onLogout={onLogout} />
+      <main className="min-h-0 flex-grow overflow-y-auto">{pageToRender}</main>
+      <Footer />
+    </div>
+  );
+};
+
 const LoadingScreen = ({ label = "Loading Vaidya Mithra..." }) => (
   <div className="grid h-screen place-items-center bg-blue-50">
     <div className="text-center">
@@ -2584,7 +2638,9 @@ const App = () => {
     if (!profileReady || !profile) return;
 
     if (profile.status !== "approved") {
-      setPage("pending");
+      if (!["pending", "profile", "support"].includes(page)) {
+        setPage("pending");
+      }
       return;
     }
 
@@ -2738,7 +2794,17 @@ const App = () => {
   if (!profileReady || !profile) return <LoadingScreen label="Loading profile..." />;
 
   if (profile.status !== "approved") {
-    return <PendingApprovalPage profile={profile} onLogout={handleLogout} />;
+    return (
+      <PendingLayout
+        auth={auth}
+        db={db}
+        appId={appId}
+        profile={profile}
+        currentPage={page}
+        onNavigate={setPage}
+        onLogout={handleLogout}
+      />
+    );
   }
 
   return (
