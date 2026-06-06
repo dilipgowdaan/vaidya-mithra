@@ -211,6 +211,9 @@ const doctorAvailabilityRef = (db, appId, doctorId) =>
 const auditLogsCol = (db, appId) =>
   collection(db, "artifacts", appId, "audit_logs");
 
+const smsQueueRef = (db, appId, smsId) =>
+  doc(db, "artifacts", appId, "sms_queue", smsId);
+
 const notificationsCol = (db, appId, userId) =>
   collection(db, "artifacts", appId, "users", userId, "notifications");
 
@@ -505,6 +508,64 @@ const writeNotification = async (db, appId, userId, payload) => {
     });
   } catch (error) {
     warnOptionalFirestoreFailure("Patient notification", error);
+  }
+};
+
+const formatIndianSmsNumber = (value) => {
+  const digits = String(value || "").replace(/\D/g, "");
+  if (digits.length === 10) return digits;
+  if (digits.length === 12 && digits.startsWith("91")) return digits.slice(2);
+  return "";
+};
+
+const maskPhone = (value) => {
+  const digits = String(value || "").replace(/\D/g, "");
+  if (!digits) return "";
+  return `******${digits.slice(-4)}`;
+};
+
+const buildScheduleSmsMessage = ({ patientName, queueToken, scheduledDate, scheduledTime, doctorName }) =>
+  `Hi, ${patientName || "Patient"}, ${queueToken || "your appointment"} is scheduled on ${scheduledDate} at ${scheduledTime} with ${doctorName}.`;
+
+const enqueueScheduledAppointmentSms = async (
+  db,
+  appId,
+  actor,
+  appointment,
+  patientPhone,
+  scheduleMessage
+) => {
+  const to = formatIndianSmsNumber(patientPhone);
+  if (!db || !appId || !appointment?.id || !to || !scheduleMessage) {
+    return { queued: false, phone: to };
+  }
+
+  const smsId = `${appointment.id}_scheduled`;
+  try {
+    await setDoc(smsQueueRef(db, appId, smsId), {
+      type: "appointment_scheduled",
+      provider: "2factor",
+      appointmentId: appointment.id,
+      patientId: appointment.patientId || "",
+      patientName: appointment.patientName || "",
+      to,
+      message: scheduleMessage,
+      templateName: "Schedule",
+      queueToken: appointment.queueToken || "",
+      doctorName: appointment.doctorName || "",
+      scheduledDate: appointment.scheduledDate || "",
+      scheduledTime: appointment.scheduledTime || "",
+      status: "queued",
+      attempts: 0,
+      createdBy: actor?.uid || "",
+      createdByName: actor?.name || actor?.email || "",
+      createdAt: serverTimestamp(),
+      createdAtClient: new Date().toISOString(),
+    });
+    return { queued: true, phone: to };
+  } catch (error) {
+    warnOptionalFirestoreFailure("Scheduled SMS queue", error);
+    return { queued: false, phone: to };
   }
 };
 
@@ -1354,6 +1415,7 @@ const AuthPage = ({ firebaseError, onLogin, onSignup }) => {
               <div className="grid gap-4 sm:grid-cols-2">
                 <Field label="Phone number">
                   <Input
+                    required={form.role === "patient"}
                     value={form.phone}
                     onChange={(event) => update("phone", event.target.value)}
                     placeholder="+91..."
@@ -2315,6 +2377,23 @@ const AttenderDashboard = ({ db, appId, profile }) => {
         tokenAssignments.find((item) => item.id === appointment.id)?.queueToken ||
         appointment.queueToken ||
         "OPD-001";
+      const patient = users.find((item) => item.uid === appointment.patientId);
+      const notificationMessage = `${currentToken} is scheduled on ${form.date} at ${form.time} with ${doctor.name}.`;
+      const scheduleMessage = buildScheduleSmsMessage({
+        patientName: appointment.patientName,
+        queueToken: currentToken,
+        scheduledDate: form.date,
+        scheduledTime: form.time,
+        doctorName: doctor.name,
+      });
+      const scheduledAppointment = {
+        ...appointment,
+        queueToken: currentToken,
+        doctorId: doctor.uid,
+        doctorName: doctor.name,
+        scheduledDate: form.date,
+        scheduledTime: form.time,
+      };
 
       await updateDoc(doc(db, "artifacts", appId, "appointments", appointment.id), {
         status: "scheduled",
@@ -2345,15 +2424,25 @@ const AttenderDashboard = ({ db, appId, profile }) => {
       );
       await writeNotification(db, appId, appointment.patientId, {
         title: "Appointment scheduled",
-        message: `${currentToken} is scheduled on ${form.date} at ${form.time} with ${doctor.name}.`,
+        message: notificationMessage,
         appointmentId: appointment.id,
       });
+      const smsResult = await enqueueScheduledAppointmentSms(
+        db,
+        appId,
+        profile,
+        scheduledAppointment,
+        patient?.phone || "",
+        scheduleMessage
+      );
       await writeAuditLog(db, appId, profile, "appointment_scheduled", "appointment", appointment.id, {
         queueToken: currentToken,
         patientName: appointment.patientName,
         doctorName: doctor.name,
         scheduledDate: form.date,
         scheduledTime: form.time,
+        smsQueued: smsResult.queued,
+        smsTo: maskPhone(smsResult.phone),
         dailyTokenRebalanced: tokenAssignments.length,
       });
     } finally {
@@ -3991,6 +4080,9 @@ const MissingProfileSetupPage = ({ db, appId, user, onComplete, onLogout }) => {
         await updateProfile(user, { displayName: form.name }).catch(() => {});
       }
       const status = form.role === "patient" ? "approved" : "pending";
+      if (form.role === "patient" && !formatIndianSmsNumber(form.phone)) {
+        throw new Error("Patients need a valid 10-digit phone number for SMS updates.");
+      }
       const profile = await ensureGlobalProfile(db, appId, user, {
         ...form,
         status,
@@ -4034,8 +4126,10 @@ const MissingProfileSetupPage = ({ db, appId, user, onComplete, onLogout }) => {
           <div className="grid gap-4 sm:grid-cols-2">
             <Field label="Phone number">
               <Input
+                required={form.role === "patient"}
                 value={form.phone}
                 onChange={(event) => update("phone", event.target.value)}
+                placeholder="+91..."
               />
             </Field>
             <Field label="Age">
@@ -4335,6 +4429,9 @@ const App = () => {
 
     const role = form.role || "patient";
     const status = role === "patient" ? "approved" : "pending";
+    if (role === "patient" && !formatIndianSmsNumber(form.phone)) {
+      throw new Error("Patients need a valid 10-digit phone number for SMS updates.");
+    }
     const credential = await createUserWithEmailAndPassword(
       auth,
       normalizeEmail(form.email),
