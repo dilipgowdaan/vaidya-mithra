@@ -1286,156 +1286,136 @@ const AuthPage = ({ firebaseError, onLogin, onSignup }) => {
   };
 
   return (
-    <div className="grid min-h-screen bg-gradient-to-br from-blue-50 via-white to-green-50 px-4 py-8 lg:grid-cols-[0.95fr_1.05fr]">
-      <div className="mx-auto hidden w-full max-w-3xl flex-col justify-center py-8 lg:flex">
-        <div className="relative max-w-lg overflow-hidden rounded-lg border border-gray-200 bg-white/70 p-8 shadow-xl shadow-blue-100/60 backdrop-blur">
-          <div className="absolute inset-x-0 top-0 h-1 bg-gradient-to-r from-blue-700 via-cyan-500 to-emerald-500" />
+    <div className="flex min-h-screen items-center justify-center bg-gradient-to-br from-blue-50 via-white to-green-50 px-4 py-8">
+      <Card className="relative w-full max-w-md overflow-hidden p-6 shadow-xl shadow-blue-100/60">
+        <div className="absolute inset-x-0 top-0 h-1 bg-gradient-to-r from-blue-700 via-cyan-500 to-emerald-500" />
+        <div className="mb-6 flex flex-col items-center gap-3 text-center">
           <Logo />
-          <div className="mt-12">
-            <p className="text-xs font-bold uppercase tracking-wide text-blue-700">
-              Secure access
-            </p>
-            <h1 className="mt-3 text-3xl font-extrabold text-gray-950">
-              Vaidya Mithra HMIS
-            </h1>
-            <p className="mt-3 max-w-sm text-sm leading-6 text-gray-600">
-              Sign in to continue to your hospital workspace.
-            </p>
-          </div>
-          <div className="mt-10 flex items-center gap-3 rounded-lg border border-gray-200 bg-blue-50/80 p-4 text-sm font-semibold text-blue-900">
-            <Icon name="checkCircle" size={20} />
-            <span>Authorized hospital access</span>
-          </div>
+          <p className="text-xs font-bold uppercase tracking-wide text-blue-700">
+            Secure hospital access
+          </p>
         </div>
-      </div>
+        <div className="mb-6 flex rounded-lg bg-gray-100 p-1">
+          <button
+            type="button"
+            onClick={() => setMode("login")}
+            className={`flex-1 rounded-md px-3 py-2 text-sm font-bold ${
+              mode === "login" ? "bg-white text-blue-800 shadow-sm" : "text-gray-600"
+            }`}
+          >
+            Sign in
+          </button>
+          <button
+            type="button"
+            onClick={() => setMode("signup")}
+            className={`flex-1 rounded-md px-3 py-2 text-sm font-bold ${
+              mode === "signup" ? "bg-white text-blue-800 shadow-sm" : "text-gray-600"
+            }`}
+          >
+            Sign up
+          </button>
+        </div>
 
-      <div className="mx-auto flex w-full max-w-md items-center">
-        <Card className="w-full p-6">
-          <div className="mb-6 flex justify-center lg:hidden">
-            <Logo />
-          </div>
-          <div className="mb-6 flex rounded-lg bg-gray-100 p-1">
-            <button
-              type="button"
-              onClick={() => setMode("login")}
-              className={`flex-1 rounded-md px-3 py-2 text-sm font-bold ${
-                mode === "login" ? "bg-white text-blue-800 shadow-sm" : "text-gray-600"
-              }`}
-            >
-              Sign in
-            </button>
-            <button
-              type="button"
-              onClick={() => setMode("signup")}
-              className={`flex-1 rounded-md px-3 py-2 text-sm font-bold ${
-                mode === "signup" ? "bg-white text-blue-800 shadow-sm" : "text-gray-600"
-              }`}
-            >
-              Sign up
-            </button>
-          </div>
-
-          <form className="space-y-4" onSubmit={submit}>
-            {mode === "signup" ? (
-              <Field label="Full name">
-                <Input
-                  required
-                  value={form.name}
-                  onChange={(event) => update("name", event.target.value)}
-                  placeholder="Enter full name"
-                />
-              </Field>
-            ) : null}
-
-            <Field label="Email">
+        <form className="space-y-4" onSubmit={submit}>
+          {mode === "signup" ? (
+            <Field label="Full name">
               <Input
                 required
-                type="email"
-                value={form.email}
-                onChange={(event) => update("email", event.target.value)}
-                placeholder="you@example.com"
+                value={form.name}
+                onChange={(event) => update("name", event.target.value)}
+                placeholder="Enter full name"
               />
             </Field>
+          ) : null}
 
-            <Field label="Password">
-              <Input
-                required
-                type="password"
-                minLength={6}
-                value={form.password}
-                onChange={(event) => update("password", event.target.value)}
-                placeholder="Minimum 6 characters"
-              />
-            </Field>
+          <Field label="Email">
+            <Input
+              required
+              type="email"
+              value={form.email}
+              onChange={(event) => update("email", event.target.value)}
+              placeholder="you@example.com"
+            />
+          </Field>
 
-            {mode === "signup" ? (
-              <>
-                <div className="grid gap-4 sm:grid-cols-2">
-                  <Field label="Phone number">
-                    <Input
-                      value={form.phone}
-                      onChange={(event) => update("phone", event.target.value)}
-                      placeholder="+91..."
-                    />
-                  </Field>
-                  <Field label="Age">
-                    <Input
-                      type="number"
-                      min="0"
-                      value={form.age}
-                      onChange={(event) => update("age", event.target.value)}
-                    />
-                  </Field>
-                </div>
-                <div className="grid gap-4 sm:grid-cols-2">
-                  <Field label="Gender">
-                    <Select
-                      value={form.gender}
-                      onChange={(event) => update("gender", event.target.value)}
-                    >
-                      <option value="">Select</option>
-                      <option value="Female">Female</option>
-                      <option value="Male">Male</option>
-                      <option value="Non-binary">Non-binary</option>
-                      <option value="Prefer not to say">Prefer not to say</option>
-                    </Select>
-                  </Field>
-                  <Field label="Role">
-                    <Select
-                      value={form.role}
-                      onChange={(event) => update("role", event.target.value)}
-                    >
-                      <option value="patient">Patient</option>
-                      <option value="doctor">Doctor</option>
-                      <option value="attender">Attender</option>
-                      <option value="admin">Admin</option>
-                    </Select>
-                  </Field>
-                </div>
-                <p className="rounded-lg bg-amber-50 p-3 text-xs leading-5 text-amber-800">
-                  Patients are auto-approved. Doctors, attenders, and additional
-                  admins remain pending until an approved admin confirms them.
-                </p>
-              </>
-            ) : (
-              <p className="rounded-lg bg-blue-50 p-3 text-xs leading-5 text-blue-800">
-                Super admin: use admin@gmail.com with Admin@123 to bootstrap the
-                admin dashboard and create the admin profile automatically.
-              </p>
-            )}
+          <Field label="Password">
+            <Input
+              required
+              type="password"
+              minLength={6}
+              value={form.password}
+              onChange={(event) => update("password", event.target.value)}
+              placeholder="Minimum 6 characters"
+            />
+          </Field>
 
-            {firebaseError || error ? (
-              <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
-                {firebaseError || error}
+          {mode === "signup" ? (
+            <>
+              <div className="grid gap-4 sm:grid-cols-2">
+                <Field label="Phone number">
+                  <Input
+                    value={form.phone}
+                    onChange={(event) => update("phone", event.target.value)}
+                    placeholder="+91..."
+                  />
+                </Field>
+                <Field label="Age">
+                  <Input
+                    type="number"
+                    min="0"
+                    value={form.age}
+                    onChange={(event) => update("age", event.target.value)}
+                  />
+                </Field>
               </div>
-            ) : null}
+              <div className="grid gap-4 sm:grid-cols-2">
+                <Field label="Gender">
+                  <Select
+                    value={form.gender}
+                    onChange={(event) => update("gender", event.target.value)}
+                  >
+                    <option value="">Select</option>
+                    <option value="Female">Female</option>
+                    <option value="Male">Male</option>
+                    <option value="Non-binary">Non-binary</option>
+                    <option value="Prefer not to say">Prefer not to say</option>
+                  </Select>
+                </Field>
+                <Field label="Role">
+                  <Select
+                    value={form.role}
+                    onChange={(event) => update("role", event.target.value)}
+                  >
+                    <option value="patient">Patient</option>
+                    <option value="doctor">Doctor</option>
+                    <option value="attender">Attender</option>
+                    <option value="admin">Admin</option>
+                  </Select>
+                </Field>
+              </div>
+              <p className="rounded-lg bg-amber-50 p-3 text-xs leading-5 text-amber-800">
+                Patients are auto-approved. Doctors, attenders, and additional
+                admins remain pending until an approved admin confirms them.
+              </p>
+            </>
+          ) : (
+            <p className="rounded-lg bg-blue-50 p-3 text-xs leading-5 text-blue-800">
+              Super admin: use admin@gmail.com with Admin@123 to bootstrap the
+              admin dashboard and create the admin profile automatically.
+            </p>
+          )}
 
-            <Button type="submit" loading={loading} className="w-full">
-              {mode === "login" ? "Sign in" : "Create account"}
-            </Button>
-          </form>
-        </Card>
-      </div>
+          {firebaseError || error ? (
+            <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+              {firebaseError || error}
+            </div>
+          ) : null}
+
+          <Button type="submit" loading={loading} className="w-full">
+            {mode === "login" ? "Sign in" : "Create account"}
+          </Button>
+        </form>
+      </Card>
     </div>
   );
 };
