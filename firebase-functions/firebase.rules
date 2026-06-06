@@ -1,0 +1,126 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /artifacts/{appId} {
+      function signedIn() {
+        return request.auth != null;
+      }
+
+      function own(userId) {
+        return signedIn() && request.auth.uid == userId;
+      }
+
+      function myProfile() {
+        return get(/databases/$(database)/documents/artifacts/$(appId)/users/$(request.auth.uid)/profile/data);
+      }
+
+      function approved() {
+        return signedIn() && myProfile().data.status == "approved";
+      }
+
+      function roleIs(role) {
+        return approved() && myProfile().data.role == role;
+      }
+
+      function admin() {
+        return roleIs("admin");
+      }
+
+      function doctor() {
+        return roleIs("doctor");
+      }
+
+      function attender() {
+        return roleIs("attender");
+      }
+
+      match /users/{userId}/profile/data {
+        allow create: if own(userId);
+        allow read, update: if own(userId) || admin();
+        allow delete: if admin();
+      }
+
+      match /users/{userId}/notifications/{notificationId} {
+        allow read, update, delete: if own(userId) || admin();
+        allow create: if signedIn() && (own(userId) || approved());
+      }
+
+      match /users/{userId}/triage_history/{historyId} {
+        allow read, write: if own(userId) || admin();
+      }
+
+      match /all_users/{userId} {
+        allow create, update: if own(userId) || admin();
+        allow read: if admin() || attender() || doctor();
+        allow delete: if admin();
+      }
+
+      match /appointments/{appointmentId} {
+        allow read: if approved();
+        allow create: if approved()
+          && (
+            (
+              request.resource.data.patientId == request.auth.uid
+              && request.resource.data.status == "requested"
+            )
+            || (
+              doctor()
+              && request.resource.data.status == "ready"
+              && request.resource.data.referralType == "specialist"
+              && request.resource.data.referredByDoctorId == request.auth.uid
+            )
+          );
+        allow update: if admin() || attender() || doctor();
+        allow delete: if admin();
+      }
+
+      match /doctor_availability/{doctorId} {
+        allow read: if approved();
+        allow create, update: if admin() || (doctor() && request.auth.uid == doctorId);
+        allow delete: if admin();
+      }
+
+      match /audit_logs/{logId} {
+        allow create: if approved();
+        allow read, delete: if admin();
+        allow update: if false;
+      }
+
+      match /sms_queue/{smsId} {
+        allow create: if (attender() || admin())
+          && request.resource.data.keys().hasOnly([
+            "type",
+            "provider",
+            "appointmentId",
+            "patientId",
+            "patientName",
+            "to",
+            "message",
+            "templateName",
+            "queueToken",
+            "doctorName",
+            "scheduledDate",
+            "scheduledTime",
+            "status",
+            "attempts",
+            "createdBy",
+            "createdByName",
+            "createdAt",
+            "createdAtClient"
+          ])
+          && request.resource.data.type == "appointment_scheduled"
+          && request.resource.data.provider == "2factor"
+          && request.resource.data.templateName == "Schedule"
+          && request.resource.data.to.matches("^[0-9]{10}$")
+          && request.resource.data.message.matches("^Hi, .+, .+ is scheduled on .+ at .+ with .+.$")
+          && request.resource.data.status == "queued";
+        allow read, update, delete: if admin();
+      }
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
