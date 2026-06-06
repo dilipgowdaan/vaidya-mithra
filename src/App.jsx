@@ -1,16 +1,18 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+
 // --- Firebase SDK Imports ---
 import { initializeApp } from 'firebase/app';
 import { 
   getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, 
-  signOut, onAuthStateChanged, updatePassword, reauthenticateWithCredential, EmailAuthProvider 
+  signOut, onAuthStateChanged, updateProfile 
 } from 'firebase/auth';
 import { 
   getFirestore, collection, doc, setDoc, updateDoc, query, orderBy, limit, 
-  onSnapshot, serverTimestamp, setLogLevel, getDocs 
+  onSnapshot, serverTimestamp, setLogLevel 
 } from 'firebase/firestore';
 
 // --- API Configuration ---
+// Read securely from Vercel Environment Variables or Canvas environment
 const env = (typeof import.meta !== 'undefined' && import.meta.env) ? import.meta.env : {};
 const apiKey = env.VITE_VAIDYA_MITHRA_GEMINI_KEY || "";
 const GEMINI_API_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
@@ -19,15 +21,19 @@ const GEMINI_API_URL = `https://generativelanguage.googleapis.com/v1beta/models/
 const JSON_SCHEMA = {
   type: "OBJECT",
   properties: {
-    emergency_flag: { type: "BOOLEAN" },
+    emergency_flag: {
+      type: "BOOLEAN",
+      description: "True if symptoms indicate a severe, life-threatening emergency (e.g., severe chest pain, inability to breathe, stroke signs). False otherwise."
+    },
     predictions: {
       type: "ARRAY",
+      description: "List of the top 3 most probable diseases based on symptoms, age, and gender.",
       items: {
         type: "OBJECT",
         properties: {
-          disease: { type: "STRING" },
-          confidence: { type: "NUMBER" },
-          description: { type: "STRING" }
+          disease: { type: "STRING", description: "The name of the potential condition." },
+          confidence: { type: "NUMBER", description: "A confidence score between 0.0 and 1.0 (e.g., 0.85 for 85%)." },
+          description: { type: "STRING", description: "A brief, non-alarming, and clear overview of the disease and suggested next steps." }
         },
         required: ["disease", "confidence", "description"]
       }
@@ -38,12 +44,28 @@ const JSON_SCHEMA = {
 
 // --- Symptom Data & Categories ---
 const ALL_SYMPTOMS_CATEGORIZED = {
-  General: ['Fatigue', 'Fever', 'Headache', 'Dizziness', 'Nausea', 'Vomiting', 'Body Ache', 'Chills', 'Sore Throat', 'Diarrhea', 'Constipation', 'Runny Nose'],
-  Respiratory: ['Cough', 'Shortness of Breath', 'Wheezing', 'Chest Tightness', 'Difficulty Breathing', 'Sputum Production', 'Sneezing', 'Hoarseness'],
-  Cardiac: ['Chest Pain', 'Palpitations', 'Fainting', 'Swelling of Legs/Ankles', 'Rapid Heartbeat', 'Lightheadedness', 'Pain Radiating to Jaw/Arm'],
-  Skin: ['Rash', 'Itching', 'Hives', 'Dry Skin', 'Jaundice', 'Bruising', 'Change in Mole appearance', 'Redness/Inflammation'],
-  Musculoskeletal: ['Joint Pain', 'Muscle Pain', 'Back Pain', 'Stiffness', 'Swollen Joints', 'Limited Range of Motion', 'Numbness/Tingling'],
+  General: [
+    'Fatigue', 'Fever', 'Headache', 'Dizziness', 'Nausea', 'Vomiting', 'Body Ache',
+    'Chills', 'Sore Throat', 'Diarrhea', 'Constipation', 'Runny Nose'
+  ],
+  Respiratory: [
+    'Cough', 'Shortness of Breath', 'Wheezing', 'Chest Tightness', 'Difficulty Breathing',
+    'Sputum Production', 'Sneezing', 'Hoarseness'
+  ],
+  Cardiac: [
+    'Chest Pain', 'Palpitations', 'Fainting', 'Swelling of Legs/Ankles',
+    'Rapid Heartbeat', 'Lightheadedness', 'Pain Radiating to Jaw/Arm'
+  ],
+  Skin: [
+    'Rash', 'Itching', 'Hives', 'Dry Skin', 'Jaundice', 'Bruising',
+    'Change in Mole appearance', 'Redness/Inflammation'
+  ],
+  Musculoskeletal: [
+    'Joint Pain', 'Muscle Pain', 'Back Pain', 'Stiffness', 'Swollen Joints',
+    'Limited Range of Motion', 'Numbness/Tingling'
+  ],
 };
+
 const SYMPTOM_CATEGORIES = Object.keys(ALL_SYMPTOMS_CATEGORIZED);
 
 // =================================================================================
@@ -68,7 +90,8 @@ const Icon = ({ name, size = 20, color = 'currentColor', className = '' }) => {
     logOut: <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>,
     bell: <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>,
     calendar: <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>,
-    users: <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+    users: <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>,
+    checkCircle: <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
   };
   return icons[name] || <div style={{ width: size, height: size }}>?</div>;
 };
@@ -141,14 +164,15 @@ const NavBar = ({ currentPage, onNavigate, userProfile, onLogout, unreadCount })
             <Logo />
           </a>
           
-          <div className="hidden md:flex items-center space-x-2">
+          {/* Desktop Menu */}
+          <div className="hidden md:flex items-center space-x-2 overflow-x-auto">
             {navItems.map((item) => {
               const isActive = currentPage === item.id;
               return (
                 <a
                   key={item.id} href="#"
                   onClick={(e) => { e.preventDefault(); handleNavigation(item.id); }}
-                  className={`px-3 py-2 rounded-lg text-sm font-medium flex items-center transition duration-150 relative ${
+                  className={`px-3 py-2 rounded-lg text-sm font-medium flex items-center transition duration-150 relative whitespace-nowrap ${
                     isActive ? 'bg-blue-100 text-blue-700' : 'text-gray-700 hover:bg-blue-50 hover:text-blue-600'
                   }`}
                 >
@@ -168,22 +192,26 @@ const NavBar = ({ currentPage, onNavigate, userProfile, onLogout, unreadCount })
             </button>
           </div>
           
+          {/* Mobile Menu Button */}
           <div className="md:hidden flex items-center">
              {userProfile?.role === 'patient' && unreadCount > 0 && (
                 <div className="mr-4 relative">
                   <Icon name="bell" size={24} color="#3b82f6" />
-                  <span className="absolute 0 right-0 flex h-3 w-3">
+                  <span className="absolute top-0 right-0 flex h-3 w-3">
                     <span className="relative inline-flex rounded-full h-3 w-3 bg-red-500"></span>
                   </span>
                 </div>
               )}
             <button className="p-2 rounded-lg text-gray-700 hover:bg-gray-100 transition" onClick={() => setIsMenuOpen(!isMenuOpen)}>
-              {isMenuOpen ? <Icon name="x" size={24} /> : <Icon name="home" size={24} />}
+              {isMenuOpen ? <Icon name="x" size={24} /> : (
+                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="3" y1="12" x2="21" y2="12"></line><line x1="3" y1="6" x2="21" y2="6"></line><line x1="3" y1="18" x2="21" y2="18"></line></svg>
+              )}
             </button>
           </div>
         </div>
       </div>
 
+      {/* Mobile Menu Overlay */}
       {isMenuOpen && (
         <div className="md:hidden absolute w-full bg-white/95 backdrop-blur-lg shadow-lg border-t border-gray-200/80 z-50">
           <div className="flex flex-col p-4 space-y-2">
@@ -199,7 +227,7 @@ const NavBar = ({ currentPage, onNavigate, userProfile, onLogout, unreadCount })
                 {item.name}
               </a>
             ))}
-            <button onClick={onLogout} className="px-4 py-3 rounded-lg text-lg font-medium text-red-600 hover:bg-red-50 flex items-center transition text-left">
+            <button onClick={onLogout} className="px-4 py-3 rounded-lg text-lg font-medium text-red-600 hover:bg-red-50 flex items-center transition text-left w-full">
               <Icon name="logOut" size={20} className="mr-3" /> Logout
             </button>
           </div>
@@ -223,12 +251,12 @@ const SkeletonCard = () => (
 );
 
 const Footer = ({ className = '' }) => (
-  <div className={`bg-white/90 backdrop-blur-sm border-t border-gray-200 py-3 px-4 sm:px-8 flex-shrink-0 ${className}`}>
-    <p className="text-xs text-gray-600 text-center max-w-5xl mx-auto mb-1">
-      <strong>Disclaimer:</strong> This application is for informational purposes. NOT a substitute for professional medical advice. Supported by Center of Excellence in Supply Chain Management (CoE-SCM).
+  <div id="footer" className={`bg-white/70 backdrop-blur-sm border-t border-gray-200 py-4 px-4 sm:px-8 flex-shrink-0 z-10 ${className}`}>
+    <p className="text-xs text-gray-600 text-center max-w-4xl mx-auto mb-2">
+      <strong>Disclaimer:</strong> This application is for informational and educational purposes only and is <strong>NOT</strong> a substitute for professional medical advice, diagnosis, or treatment. Always seek the advice of your physician.
     </p>
     <p className="text-xs text-gray-500 text-center">
-      © 2026 Vaidya Mithra HMIS. All rights reserved.
+      &copy; 2026 Vaidya Mithra HMIS. All rights reserved.
     </p>
   </div>
 );
@@ -237,7 +265,7 @@ const Footer = ({ className = '' }) => (
 // --- AUTH & RBAC COMPONENTS ---
 // =================================================================================
 
-const AuthPage = ({ onAuthSuccess, db, auth, appId }) => {
+const AuthPage = ({ db, auth, appId }) => {
   const [isLogin, setIsLogin] = useState(true);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -257,10 +285,11 @@ const AuthPage = ({ onAuthSuccess, db, auth, appId }) => {
           try {
             await signInWithEmailAndPassword(auth, email, password);
           } catch (err) {
-            // If super admin doesn't exist, create it
+            // Auto-create super admin if bypass is used and it doesn't exist
             const cred = await createUserWithEmailAndPassword(auth, email, password);
             const adminData = { email, role: 'admin', status: 'approved', name: 'Super Admin', createdAt: serverTimestamp() };
-            await setDoc(doc(db, `artifacts/${appId}/all_users`, cred.user.uid), adminData);
+            // Save in BOTH places as requested
+            await setDoc(doc(db, `artifacts/${appId}/public/data/all_users`, cred.user.uid), adminData);
             await setDoc(doc(db, `artifacts/${appId}/users/${cred.user.uid}/profile`, 'data'), adminData);
           }
         } else {
@@ -271,8 +300,11 @@ const AuthPage = ({ onAuthSuccess, db, auth, appId }) => {
         const status = role === 'patient' ? 'approved' : 'pending';
         const userData = { email, role, status, name, age: '', gender: '', createdAt: serverTimestamp() };
         
-        // Save to TWO places as required
-        await setDoc(doc(db, `artifacts/${appId}/all_users`, cred.user.uid), userData);
+        // Update Firebase Auth Profile for Display Name
+        await updateProfile(cred.user, { displayName: name });
+
+        // Save in BOTH places as requested
+        await setDoc(doc(db, `artifacts/${appId}/public/data/all_users`, cred.user.uid), userData);
         await setDoc(doc(db, `artifacts/${appId}/users/${cred.user.uid}/profile`, 'data'), userData);
       }
     } catch (err) {
@@ -284,22 +316,22 @@ const AuthPage = ({ onAuthSuccess, db, auth, appId }) => {
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 to-cyan-50 p-4">
-      <div className="bg-white p-8 rounded-2xl shadow-xl w-full max-w-md border border-blue-100">
+      <div className="bg-white p-8 rounded-2xl shadow-2xl w-full max-w-md border border-blue-100 transform transition-all duration-500 hover:scale-[1.01]">
         <div className="flex justify-center mb-6"><Logo /></div>
-        <h2 className="text-2xl font-bold text-center text-blue-900 mb-6">{isLogin ? 'Sign In to HMIS' : 'Create Account'}</h2>
+        <h2 className="text-2xl font-extrabold text-center text-blue-900 mb-6">{isLogin ? 'Sign In to HMIS' : 'Create Account'}</h2>
         
-        {error && <div className="bg-red-50 text-red-600 p-3 rounded-lg mb-4 text-sm">{error}</div>}
+        {error && <div className="bg-red-50 text-red-600 p-3 rounded-lg mb-4 text-sm border border-red-200">{error}</div>}
         
         <form onSubmit={handleSubmit} className="space-y-4">
           {!isLogin && (
             <>
               <div>
                 <label className="block text-sm font-medium text-gray-700">Full Name</label>
-                <input required type="text" value={name} onChange={e => setName(e.target.value)} className="mt-1 w-full p-3 border border-gray-300 rounded-xl focus:ring-blue-500" />
+                <input required type="text" value={name} onChange={e => setName(e.target.value)} className="mt-1 w-full p-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all" />
               </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700">Select Role</label>
-                <select value={role} onChange={e => setRole(e.target.value)} className="mt-1 w-full p-3 border border-gray-300 rounded-xl focus:ring-blue-500 bg-white">
+                <select value={role} onChange={e => setRole(e.target.value)} className="mt-1 w-full p-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all bg-white">
                   <option value="patient">Patient (Auto-Approve)</option>
                   <option value="doctor">Doctor (Requires Admin Approval)</option>
                   <option value="attender">Attender (Requires Admin Approval)</option>
@@ -308,20 +340,20 @@ const AuthPage = ({ onAuthSuccess, db, auth, appId }) => {
             </>
           )}
           <div>
-            <label className="block text-sm font-medium text-gray-700">Email</label>
-            <input required type="email" value={email} onChange={e => setEmail(e.target.value)} className="mt-1 w-full p-3 border border-gray-300 rounded-xl focus:ring-blue-500" />
+            <label className="block text-sm font-medium text-gray-700">Email Address</label>
+            <input required type="email" value={email} onChange={e => setEmail(e.target.value)} className="mt-1 w-full p-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all" />
           </div>
           <div>
             <label className="block text-sm font-medium text-gray-700">Password</label>
-            <input required type="password" value={password} onChange={e => setPassword(e.target.value)} className="mt-1 w-full p-3 border border-gray-300 rounded-xl focus:ring-blue-500" />
+            <input required type="password" value={password} onChange={e => setPassword(e.target.value)} className="mt-1 w-full p-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all" />
           </div>
-          <button disabled={loading} type="submit" className="w-full bg-blue-600 text-white font-bold py-3 rounded-xl hover:bg-blue-700 transition disabled:opacity-50">
-            {loading ? 'Processing...' : (isLogin ? 'Sign In' : 'Sign Up')}
+          <button disabled={loading} type="submit" className="w-full bg-blue-600 text-white font-bold py-3 rounded-xl hover:bg-blue-700 shadow-lg hover:shadow-xl transition-all duration-300 transform hover:-translate-y-1 disabled:opacity-50 disabled:hover:translate-y-0">
+            {loading ? <span className="flex items-center justify-center"><svg className="animate-spin -ml-1 mr-3 h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg> Processing...</span> : (isLogin ? 'Secure Sign In' : 'Register Account')}
           </button>
         </form>
         <div className="mt-6 text-center text-sm">
-          <button onClick={() => setIsLogin(!isLogin)} className="text-blue-600 hover:underline">
-            {isLogin ? "Need an account? Sign up" : "Already have an account? Sign in"}
+          <button onClick={() => setIsLogin(!isLogin)} className="text-blue-600 font-semibold hover:text-blue-800 transition">
+            {isLogin ? "Need an account? Sign up here" : "Already have an account? Sign in"}
           </button>
         </div>
       </div>
@@ -330,21 +362,25 @@ const AuthPage = ({ onAuthSuccess, db, auth, appId }) => {
 };
 
 const PendingStatePage = ({ onLogout }) => (
-  <div className="h-full flex items-center justify-center p-4">
+  <div className="h-full flex items-center justify-center p-4 bg-gray-50">
     <div className="bg-white p-8 rounded-2xl shadow-xl max-w-md text-center border border-yellow-200">
-      <Icon name="alertTriangle" size={48} className="mx-auto text-yellow-500 mb-4" />
-      <h2 className="text-2xl font-bold text-gray-800 mb-2">Wait for confirmation</h2>
-      <p className="text-gray-600 mb-6">Your staff account is currently pending approval by an administrator. This page will automatically refresh once you are approved.</p>
-      <button onClick={onLogout} className="text-blue-600 font-medium hover:underline">Sign out and return later</button>
+      <div className="mx-auto bg-yellow-100 w-24 h-24 rounded-full flex items-center justify-center mb-6">
+        <Icon name="alertTriangle" size={48} className="text-yellow-500" />
+      </div>
+      <h2 className="text-2xl font-bold text-gray-800 mb-2">Wait for Confirmation</h2>
+      <p className="text-gray-600 mb-6 text-sm">Your staff account is currently pending approval by a system administrator. This page will automatically redirect to your dashboard once your status is updated.</p>
+      <button onClick={onLogout} className="text-blue-600 font-bold hover:text-blue-800 flex items-center justify-center w-full transition">
+        <Icon name="logOut" size={20} className="mr-2" /> Sign out and return later
+      </button>
     </div>
   </div>
 );
 
 // =================================================================================
-// --- DASHBOARDS & WORKFLOW PAGES ---
+// --- HMIS DASHBOARDS & WORKFLOW PAGES ---
 // =================================================================================
 
-const ProfilePage = ({ db, auth, userId, appId, userProfile }) => {
+const ProfilePage = ({ db, userId, appId, userProfile }) => {
   const [name, setName] = useState(userProfile?.name || '');
   const [phone, setPhone] = useState(userProfile?.phone || '');
   const [age, setAge] = useState(userProfile?.age || '');
@@ -353,10 +389,11 @@ const ProfilePage = ({ db, auth, userId, appId, userProfile }) => {
 
   const handleUpdate = async (e) => {
     e.preventDefault();
-    setStatusMsg('Updating...');
+    setStatusMsg('Updating profile...');
     try {
       const updates = { name, phone, age, gender };
-      await updateDoc(doc(db, `artifacts/${appId}/all_users`, userId), updates);
+      // Update in TWO places
+      await updateDoc(doc(db, `artifacts/${appId}/public/data/all_users`, userId), updates);
       await updateDoc(doc(db, `artifacts/${appId}/users/${userId}/profile`, 'data'), updates);
       setStatusMsg('Profile updated successfully!');
       setTimeout(() => setStatusMsg(''), 3000);
@@ -366,35 +403,46 @@ const ProfilePage = ({ db, auth, userId, appId, userProfile }) => {
   };
 
   return (
-    <div className="max-w-2xl mx-auto p-4 sm:p-8">
-      <div className="bg-white shadow-lg rounded-2xl p-6 border border-gray-100">
-        <h2 className="text-2xl font-bold text-blue-900 mb-6 flex items-center"><Icon name="user" className="mr-2" /> My Profile</h2>
-        {statusMsg && <div className="mb-4 p-3 bg-blue-50 text-blue-700 rounded-lg text-sm">{statusMsg}</div>}
-        <form onSubmit={handleUpdate} className="space-y-4">
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+    <div className="max-w-3xl mx-auto p-4 sm:p-8 animate-[fadeInUp_0.5s_ease-out_forwards]">
+      <div className="bg-white shadow-xl rounded-2xl p-6 sm:p-8 border border-gray-100">
+        <h2 className="text-3xl font-extrabold text-blue-900 mb-8 flex items-center">
+          <div className="p-2 bg-blue-100 rounded-xl mr-3"><Icon name="user" size={28} className="text-blue-600" /></div>
+          My Profile
+        </h2>
+        
+        {statusMsg && (
+          <div className={`mb-6 p-4 rounded-xl text-sm font-semibold flex items-center ${statusMsg.includes('Error') ? 'bg-red-50 text-red-700 border border-red-200' : 'bg-green-50 text-green-700 border border-green-200'}`}>
+            <Icon name={statusMsg.includes('Error') ? "alertTriangle" : "checkCircle"} className="mr-2" />
+            {statusMsg}
+          </div>
+        )}
+
+        <form onSubmit={handleUpdate} className="space-y-6">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
+            <div className="bg-gray-50 p-4 rounded-xl border border-gray-200">
+              <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Account Role</label>
+              <div className="text-lg font-semibold text-gray-800">{userProfile?.role.toUpperCase()}</div>
+            </div>
+            <div className="bg-gray-50 p-4 rounded-xl border border-gray-200">
+              <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Email Address</label>
+              <div className="text-lg font-semibold text-gray-800">{userProfile?.email}</div>
+            </div>
+            
             <div>
-              <label className="block text-sm font-medium text-gray-700">Role</label>
-              <input disabled type="text" value={userProfile?.role.toUpperCase()} className="mt-1 w-full p-3 bg-gray-100 border border-gray-300 rounded-xl" />
+              <label className="block text-sm font-semibold text-gray-700 mb-1">Full Name</label>
+              <input type="text" value={name} onChange={e=>setName(e.target.value)} className="w-full p-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all shadow-sm" />
             </div>
             <div>
-              <label className="block text-sm font-medium text-gray-700">Email</label>
-              <input disabled type="text" value={userProfile?.email} className="mt-1 w-full p-3 bg-gray-100 border border-gray-300 rounded-xl" />
+              <label className="block text-sm font-semibold text-gray-700 mb-1">Phone Number</label>
+              <input type="tel" value={phone} onChange={e=>setPhone(e.target.value)} className="w-full p-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all shadow-sm" placeholder="e.g., +1 234 567 8900" />
             </div>
             <div>
-              <label className="block text-sm font-medium text-gray-700">Full Name</label>
-              <input type="text" value={name} onChange={e=>setName(e.target.value)} className="mt-1 w-full p-3 border border-gray-300 rounded-xl focus:ring-blue-500" />
+              <label className="block text-sm font-semibold text-gray-700 mb-1">Age</label>
+              <input type="number" value={age} onChange={e=>setAge(e.target.value)} className="w-full p-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all shadow-sm" />
             </div>
             <div>
-              <label className="block text-sm font-medium text-gray-700">Phone</label>
-              <input type="tel" value={phone} onChange={e=>setPhone(e.target.value)} className="mt-1 w-full p-3 border border-gray-300 rounded-xl focus:ring-blue-500" />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700">Age</label>
-              <input type="number" value={age} onChange={e=>setAge(e.target.value)} className="mt-1 w-full p-3 border border-gray-300 rounded-xl focus:ring-blue-500" />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700">Gender</label>
-              <select value={gender} onChange={e=>setGender(e.target.value)} className="mt-1 w-full p-3 border border-gray-300 rounded-xl focus:ring-blue-500 bg-white">
+              <label className="block text-sm font-semibold text-gray-700 mb-1">Gender</label>
+              <select value={gender} onChange={e=>setGender(e.target.value)} className="w-full p-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all shadow-sm bg-white">
                 <option value="">Select...</option>
                 <option value="Male">Male</option>
                 <option value="Female">Female</option>
@@ -402,7 +450,11 @@ const ProfilePage = ({ db, auth, userId, appId, userProfile }) => {
               </select>
             </div>
           </div>
-          <button type="submit" className="mt-4 bg-blue-600 text-white font-bold py-2 px-6 rounded-xl hover:bg-blue-700 transition">Save Profile</button>
+          <div className="pt-4 border-t border-gray-100 flex justify-end">
+            <button type="submit" className="bg-blue-600 text-white font-bold py-3 px-8 rounded-xl hover:bg-blue-700 shadow-md hover:shadow-lg transition-all duration-200 transform hover:-translate-y-1">
+              Save Changes
+            </button>
+          </div>
         </form>
       </div>
     </div>
@@ -415,10 +467,12 @@ const PatientAppointments = ({ db, userId, appId, userProfile }) => {
   
   useEffect(() => {
     if (!db || !appId || !userId) return;
-    const q = query(collection(db, `artifacts/${appId}/appointments`));
+    const q = query(collection(db, `artifacts/${appId}/public/data/appointments`));
     const unsub = onSnapshot(q, (snap) => {
-      // Client side filter
-      const apps = snap.docs.map(d => ({id: d.id, ...d.data()})).filter(a => a.patientId === userId).sort((a,b) => b.timestamp - a.timestamp);
+      // Rule 2: Client side filtering
+      const apps = snap.docs.map(d => ({id: d.id, ...d.data()}))
+        .filter(a => a.patientId === userId)
+        .sort((a,b) => b.timestamp - a.timestamp);
       setAppointments(apps);
     });
     return () => unsub();
@@ -427,7 +481,7 @@ const PatientAppointments = ({ db, userId, appId, userProfile }) => {
   const handleRequest = async (e) => {
     e.preventDefault();
     if (!reason.trim()) return;
-    const ref = doc(collection(db, `artifacts/${appId}/appointments`));
+    const ref = doc(collection(db, `artifacts/${appId}/public/data/appointments`));
     await setDoc(ref, {
       patientId: userId,
       patientName: userProfile.name,
@@ -439,37 +493,85 @@ const PatientAppointments = ({ db, userId, appId, userProfile }) => {
     setReason('');
   };
 
-  const statusColors = { requested: 'bg-yellow-100 text-yellow-800', scheduled: 'bg-blue-100 text-blue-800', ready: 'bg-purple-100 text-purple-800', completed: 'bg-green-100 text-green-800' };
+  const statusColors = { 
+    requested: 'bg-yellow-100 text-yellow-800 border-yellow-200', 
+    scheduled: 'bg-blue-100 text-blue-800 border-blue-200', 
+    ready: 'bg-purple-100 text-purple-800 border-purple-200', 
+    completed: 'bg-green-100 text-green-800 border-green-200' 
+  };
 
   return (
-    <div className="max-w-4xl mx-auto p-4 sm:p-8 space-y-6">
-      <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-200">
-        <h2 className="text-xl font-bold text-blue-900 mb-4">Request Consultation</h2>
-        <form onSubmit={handleRequest} className="space-y-3">
-          <textarea required value={reason} onChange={e=>setReason(e.target.value)} placeholder="Explain your reason for visit / symptoms..." className="w-full p-3 border border-gray-300 rounded-xl focus:ring-blue-500 h-24" />
-          <button type="submit" className="bg-blue-600 text-white font-bold py-2 px-6 rounded-xl hover:bg-blue-700 transition">Request Consult</button>
+    <div className="max-w-5xl mx-auto p-4 sm:p-8 space-y-8 animate-[fadeInUp_0.5s_ease-out_forwards]">
+      
+      {/* Request Form */}
+      <div className="bg-white p-6 sm:p-8 rounded-3xl shadow-xl border border-gray-100 relative overflow-hidden">
+        <div className="absolute top-0 right-0 w-64 h-64 bg-blue-50 rounded-full blur-3xl -mr-20 -mt-20 opacity-50"></div>
+        <h2 className="text-2xl font-extrabold text-blue-900 mb-2 relative z-10 flex items-center">
+          <Icon name="calendar" className="mr-3 text-blue-500" size={28} /> Request New Consultation
+        </h2>
+        <p className="text-gray-500 mb-6 relative z-10">Describe your symptoms to join the attender queue.</p>
+        
+        <form onSubmit={handleRequest} className="space-y-4 relative z-10">
+          <textarea 
+            required value={reason} onChange={e=>setReason(e.target.value)} 
+            placeholder="E.g., I have been experiencing severe headaches and slight fever for the last 2 days..." 
+            className="w-full p-4 border border-gray-300 rounded-2xl focus:ring-4 focus:ring-blue-100 focus:border-blue-500 h-32 transition-all shadow-sm resize-none" 
+          />
+          <div className="flex justify-end">
+            <button type="submit" className="bg-blue-600 text-white font-bold py-3 px-8 rounded-xl hover:bg-blue-700 shadow-lg hover:shadow-xl transition-all duration-200 transform hover:-translate-y-1 flex items-center">
+              Submit Request <Icon name="send" size={18} className="ml-2" />
+            </button>
+          </div>
         </form>
       </div>
 
-      <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-200">
-        <h2 className="text-xl font-bold text-blue-900 mb-4">My Appointments History</h2>
-        <div className="space-y-4">
-          {appointments.length === 0 ? <p className="text-gray-500 text-sm">No appointments found.</p> : appointments.map(app => (
-            <div key={app.id} className="p-4 border border-gray-100 rounded-xl bg-gray-50 flex flex-col sm:flex-row justify-between gap-4">
-              <div>
-                <div className="flex items-center gap-2 mb-2">
-                  <span className={`text-xs font-bold px-2 py-1 rounded-md uppercase ${statusColors[app.status]}`}>{app.status}</span>
-                  <span className="text-xs text-gray-500">{new Date(app.timestamp).toLocaleString()}</span>
+      {/* History Timeline */}
+      <div className="bg-white p-6 sm:p-8 rounded-3xl shadow-xl border border-gray-100">
+        <h2 className="text-2xl font-extrabold text-blue-900 mb-6 flex items-center">
+          <Icon name="history" className="mr-3 text-blue-500" size={28} /> My Appointments History
+        </h2>
+        
+        <div className="space-y-6">
+          {appointments.length === 0 ? (
+             <div className="text-center p-8 bg-gray-50 rounded-2xl border border-dashed border-gray-300">
+               <Icon name="calendar" size={48} className="mx-auto text-gray-400 mb-3" />
+               <p className="text-gray-500 font-medium">No previous appointments found.</p>
+             </div>
+          ) : appointments.map(app => (
+            <div key={app.id} className="p-5 border border-gray-200 rounded-2xl bg-white shadow-sm hover:shadow-md transition-shadow">
+              <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-4">
+                <div>
+                  <span className={`text-xs font-bold px-3 py-1 rounded-full uppercase border ${statusColors[app.status]}`}>
+                    {app.status}
+                  </span>
+                  <span className="text-sm font-medium text-gray-500 ml-3">
+                    {new Date(app.timestamp).toLocaleString()}
+                  </span>
                 </div>
-                <p className="text-sm font-medium text-gray-800">Reason: {app.reason}</p>
-                {app.status === 'scheduled' && <p className="text-sm text-blue-600 mt-1">Scheduled for: {app.scheduledDate} at {app.scheduledTime} with Dr. {app.doctorName}</p>}
-                {app.status === 'completed' && (
-                  <div className="mt-3 p-3 bg-white border border-green-100 rounded-lg">
-                    <p className="text-xs font-bold text-green-800 mb-1">Doctor's Notes & Prescription:</p>
-                    <p className="text-sm text-gray-700 whitespace-pre-wrap">{app.clinicalNotes}</p>
-                  </div>
-                )}
               </div>
+              
+              <div className="bg-gray-50 p-4 rounded-xl border border-gray-100 mb-4">
+                <p className="text-sm font-bold text-gray-700 mb-1">Reason for Visit:</p>
+                <p className="text-base text-gray-800">{app.reason}</p>
+              </div>
+
+              {app.status === 'scheduled' && (
+                <div className="flex items-center text-sm font-semibold text-blue-700 bg-blue-50 p-3 rounded-xl border border-blue-100">
+                  <Icon name="calendar" size={18} className="mr-2" />
+                  Scheduled for: {app.scheduledDate} at {app.scheduledTime} with Dr. {app.doctorName}
+                </div>
+              )}
+              
+              {app.status === 'completed' && (
+                <div className="mt-4 p-5 bg-green-50 border border-green-200 rounded-xl">
+                  <p className="text-sm font-extrabold text-green-900 mb-2 flex items-center">
+                    <Icon name="stethoscope" size={18} className="mr-2" /> Doctor's Notes & Prescription:
+                  </p>
+                  <p className="text-base text-gray-800 whitespace-pre-wrap leading-relaxed bg-white p-4 rounded-lg border border-green-100 shadow-sm">
+                    {app.clinicalNotes}
+                  </p>
+                </div>
+              )}
             </div>
           ))}
         </div>
@@ -486,10 +588,11 @@ const AttenderDashboard = ({ db, appId }) => {
 
   useEffect(() => {
     if (!db || !appId) return;
-    const unsubApps = onSnapshot(collection(db, `artifacts/${appId}/appointments`), snap => {
+    const unsubApps = onSnapshot(collection(db, `artifacts/${appId}/public/data/appointments`), snap => {
       setAppointments(snap.docs.map(d => ({id: d.id, ...d.data()})).sort((a,b) => a.timestamp - b.timestamp));
     });
-    const unsubDocs = onSnapshot(collection(db, `artifacts/${appId}/all_users`), snap => {
+    const unsubDocs = onSnapshot(collection(db, `artifacts/${appId}/public/data/all_users`), snap => {
+      // Client side filtering for doctors
       setDoctors(snap.docs.map(d => ({id: d.id, ...d.data()})).filter(u => u.role === 'doctor' && u.status === 'approved'));
     });
     return () => { unsubApps(); unsubDocs(); };
@@ -498,7 +601,7 @@ const AttenderDashboard = ({ db, appId }) => {
   const handleSchedule = async (e) => {
     e.preventDefault();
     const docInfo = doctors.find(d => d.id === e.target.doctorId.value);
-    await updateDoc(doc(db, `artifacts/${appId}/appointments`, scheduleModal.id), {
+    await updateDoc(doc(db, `artifacts/${appId}/public/data/appointments`, scheduleModal.id), {
       status: 'scheduled', doctorId: docInfo.id, doctorName: docInfo.name,
       scheduledDate: e.target.date.value, scheduledTime: e.target.time.value
     });
@@ -507,7 +610,7 @@ const AttenderDashboard = ({ db, appId }) => {
 
   const handleVitals = async (e) => {
     e.preventDefault();
-    await updateDoc(doc(db, `artifacts/${appId}/appointments`, vitalsModal.id), {
+    await updateDoc(doc(db, `artifacts/${appId}/public/data/appointments`, vitalsModal.id), {
       status: 'ready',
       vitals: { bp: e.target.bp.value, hr: e.target.hr.value, glucose: e.target.glucose.value }
     });
@@ -518,64 +621,124 @@ const AttenderDashboard = ({ db, appId }) => {
   const scheduledQueue = appointments.filter(a => a.status === 'scheduled');
 
   return (
-    <div className="max-w-6xl mx-auto p-4 sm:p-8 space-y-8">
+    <div className="max-w-7xl mx-auto p-4 sm:p-8 space-y-8 animate-[fadeInUp_0.5s_ease-out_forwards]">
+      
+      {/* 1. Triage Queue */}
       <div>
-        <h2 className="text-2xl font-bold text-blue-900 mb-4">Triage Queue (Requested)</h2>
-        <div className="bg-white shadow-sm border border-gray-200 rounded-2xl overflow-hidden">
-          <table className="min-w-full divide-y divide-gray-200">
-            <thead className="bg-gray-50"><tr><th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Patient</th><th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Reason</th><th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Action</th></tr></thead>
-            <tbody className="bg-white divide-y divide-gray-200">
-              {requestedQueue.map(app => (
-                <tr key={app.id}>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{app.patientName} <span className="text-gray-500 text-xs">({app.patientAge}y)</span></td>
-                  <td className="px-6 py-4 text-sm text-gray-500">{app.reason}</td>
-                  <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
-                    <button onClick={() => setScheduleModal(app)} className="text-blue-600 hover:text-blue-900 bg-blue-50 px-3 py-1 rounded-lg">Schedule</button>
-                  </td>
+        <h2 className="text-2xl font-extrabold text-blue-900 mb-4 flex items-center">
+          <Icon name="users" className="mr-3 text-blue-500" size={28} /> Triage Queue (Requested)
+          <span className="ml-3 bg-yellow-100 text-yellow-800 text-sm font-bold px-3 py-1 rounded-full">{requestedQueue.length}</span>
+        </h2>
+        <div className="bg-white shadow-xl border border-gray-200 rounded-3xl overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="min-w-full divide-y divide-gray-200">
+              <thead className="bg-gray-50">
+                <tr>
+                  <th className="px-6 py-4 text-left text-xs font-bold text-gray-500 uppercase tracking-wider">Patient Details</th>
+                  <th className="px-6 py-4 text-left text-xs font-bold text-gray-500 uppercase tracking-wider">Time Requested</th>
+                  <th className="px-6 py-4 text-left text-xs font-bold text-gray-500 uppercase tracking-wider">Reason for Visit</th>
+                  <th className="px-6 py-4 text-right text-xs font-bold text-gray-500 uppercase tracking-wider">Action</th>
                 </tr>
-              ))}
-              {requestedQueue.length === 0 && <tr><td colSpan="3" className="px-6 py-4 text-center text-sm text-gray-500">Queue is empty</td></tr>}
-            </tbody>
-          </table>
+              </thead>
+              <tbody className="bg-white divide-y divide-gray-100">
+                {requestedQueue.map(app => (
+                  <tr key={app.id} className="hover:bg-gray-50 transition-colors">
+                    <td className="px-6 py-4 whitespace-nowrap">
+                      <div className="text-sm font-bold text-gray-900">{app.patientName}</div>
+                      <div className="text-xs text-gray-500">Age: {app.patientAge}</div>
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                      {new Date(app.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
+                    </td>
+                    <td className="px-6 py-4 text-sm text-gray-700 max-w-xs truncate" title={app.reason}>{app.reason}</td>
+                    <td className="px-6 py-4 whitespace-nowrap text-right">
+                      <button onClick={() => setScheduleModal(app)} className="bg-blue-600 hover:bg-blue-700 text-white font-bold px-4 py-2 rounded-xl transition shadow-md hover:shadow-lg transform hover:-translate-y-0.5">
+                        Assign Doctor
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+                {requestedQueue.length === 0 && <tr><td colSpan="4" className="px-6 py-12 text-center text-gray-500 font-medium">Triage queue is empty. Great job!</td></tr>}
+              </tbody>
+            </table>
+          </div>
         </div>
       </div>
 
+      {/* 2. Arrival Queue */}
       <div>
-        <h2 className="text-2xl font-bold text-blue-900 mb-4">Arrival Queue (Scheduled)</h2>
-        <div className="bg-white shadow-sm border border-gray-200 rounded-2xl overflow-hidden">
-          <table className="min-w-full divide-y divide-gray-200">
-            <thead className="bg-gray-50"><tr><th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Patient</th><th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Time/Doc</th><th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Action</th></tr></thead>
-            <tbody className="bg-white divide-y divide-gray-200">
-              {scheduledQueue.map(app => (
-                <tr key={app.id}>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{app.patientName}</td>
-                  <td className="px-6 py-4 text-sm text-gray-500">{app.scheduledDate} {app.scheduledTime} | Dr. {app.doctorName}</td>
-                  <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
-                    <button onClick={() => setVitalsModal(app)} className="text-purple-600 hover:text-purple-900 bg-purple-50 px-3 py-1 rounded-lg">Record Vitals</button>
-                  </td>
+        <h2 className="text-2xl font-extrabold text-purple-900 mb-4 flex items-center mt-12">
+          <Icon name="calendar" className="mr-3 text-purple-500" size={28} /> Arrival Queue (Scheduled)
+          <span className="ml-3 bg-blue-100 text-blue-800 text-sm font-bold px-3 py-1 rounded-full">{scheduledQueue.length}</span>
+        </h2>
+        <div className="bg-white shadow-xl border border-gray-200 rounded-3xl overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="min-w-full divide-y divide-gray-200">
+              <thead className="bg-gray-50">
+                <tr>
+                  <th className="px-6 py-4 text-left text-xs font-bold text-gray-500 uppercase tracking-wider">Patient Details</th>
+                  <th className="px-6 py-4 text-left text-xs font-bold text-gray-500 uppercase tracking-wider">Schedule Info</th>
+                  <th className="px-6 py-4 text-left text-xs font-bold text-gray-500 uppercase tracking-wider">Reason</th>
+                  <th className="px-6 py-4 text-right text-xs font-bold text-gray-500 uppercase tracking-wider">Action</th>
                 </tr>
-              ))}
-              {scheduledQueue.length === 0 && <tr><td colSpan="3" className="px-6 py-4 text-center text-sm text-gray-500">Queue is empty</td></tr>}
-            </tbody>
-          </table>
+              </thead>
+              <tbody className="bg-white divide-y divide-gray-100">
+                {scheduledQueue.map(app => (
+                  <tr key={app.id} className="hover:bg-gray-50 transition-colors">
+                    <td className="px-6 py-4 whitespace-nowrap">
+                      <div className="text-sm font-bold text-gray-900">{app.patientName}</div>
+                      <div className="text-xs text-gray-500">Age: {app.patientAge}</div>
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap">
+                      <div className="text-sm font-bold text-blue-700">{app.scheduledDate} @ {app.scheduledTime}</div>
+                      <div className="text-xs font-medium text-gray-600">Dr. {app.doctorName}</div>
+                    </td>
+                    <td className="px-6 py-4 text-sm text-gray-700 max-w-xs truncate">{app.reason}</td>
+                    <td className="px-6 py-4 whitespace-nowrap text-right">
+                      <button onClick={() => setVitalsModal(app)} className="bg-purple-600 hover:bg-purple-700 text-white font-bold px-4 py-2 rounded-xl transition shadow-md hover:shadow-lg transform hover:-translate-y-0.5">
+                        Patient Arrived (Vitals)
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+                {scheduledQueue.length === 0 && <tr><td colSpan="4" className="px-6 py-12 text-center text-gray-500 font-medium">No scheduled arrivals pending.</td></tr>}
+              </tbody>
+            </table>
+          </div>
         </div>
       </div>
 
+      {/* Modals */}
       {scheduleModal && (
-        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 z-50">
-          <div className="bg-white rounded-2xl p-6 w-full max-w-md shadow-2xl">
-            <h3 className="text-lg font-bold mb-4">Schedule: {scheduleModal.patientName}</h3>
-            <form onSubmit={handleSchedule} className="space-y-4">
-              <div><label className="block text-sm">Date</label><input required name="date" type="date" className="mt-1 w-full p-2 border rounded" /></div>
-              <div><label className="block text-sm">Time</label><input required name="time" type="time" className="mt-1 w-full p-2 border rounded" /></div>
-              <div><label className="block text-sm">Assign Doctor</label>
-                <select required name="doctorId" className="mt-1 w-full p-2 border rounded bg-white">
+        <div className="fixed inset-0 bg-gray-900/60 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-[fadeIn_0.2s_ease-out_forwards]">
+          <div className="bg-white rounded-3xl p-8 w-full max-w-md shadow-2xl transform transition-all">
+            <h3 className="text-2xl font-extrabold text-blue-900 mb-6 border-b pb-4">Schedule Consultation</h3>
+            <div className="bg-gray-50 p-4 rounded-xl mb-6">
+              <p className="text-sm text-gray-500 font-bold mb-1">Patient</p>
+              <p className="font-semibold text-lg text-gray-900">{scheduleModal.patientName}</p>
+            </div>
+            
+            <form onSubmit={handleSchedule} className="space-y-5">
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-bold text-gray-700 mb-1">Date</label>
+                  <input required name="date" type="date" className="w-full p-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500" />
+                </div>
+                <div>
+                  <label className="block text-sm font-bold text-gray-700 mb-1">Time</label>
+                  <input required name="time" type="time" className="w-full p-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500" />
+                </div>
+              </div>
+              <div>
+                <label className="block text-sm font-bold text-gray-700 mb-1">Assign Doctor</label>
+                <select required name="doctorId" className="w-full p-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 bg-white shadow-sm">
+                  <option value="">Select an available doctor...</option>
                   {doctors.map(d => <option key={d.id} value={d.id}>Dr. {d.name}</option>)}
                 </select>
               </div>
-              <div className="flex justify-end space-x-2 pt-2">
-                <button type="button" onClick={()=>setScheduleModal(null)} className="px-4 py-2 bg-gray-200 rounded">Cancel</button>
-                <button type="submit" className="px-4 py-2 bg-blue-600 text-white rounded">Confirm</button>
+              <div className="flex justify-end space-x-3 pt-4">
+                <button type="button" onClick={()=>setScheduleModal(null)} className="px-6 py-3 bg-gray-100 text-gray-700 font-bold rounded-xl hover:bg-gray-200 transition">Cancel</button>
+                <button type="submit" className="px-6 py-3 bg-blue-600 text-white font-bold rounded-xl hover:bg-blue-700 shadow-lg transition">Confirm Schedule</button>
               </div>
             </form>
           </div>
@@ -583,16 +746,32 @@ const AttenderDashboard = ({ db, appId }) => {
       )}
 
       {vitalsModal && (
-        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 z-50">
-          <div className="bg-white rounded-2xl p-6 w-full max-w-md shadow-2xl">
-            <h3 className="text-lg font-bold mb-4">Record Vitals: {vitalsModal.patientName}</h3>
-            <form onSubmit={handleVitals} className="space-y-4">
-              <div><label className="block text-sm">Blood Pressure (mmHg)</label><input required name="bp" placeholder="120/80" className="mt-1 w-full p-2 border rounded" /></div>
-              <div><label className="block text-sm">Heart Rate (bpm)</label><input required name="hr" type="number" placeholder="72" className="mt-1 w-full p-2 border rounded" /></div>
-              <div><label className="block text-sm">Glucose (mg/dL)</label><input required name="glucose" type="number" placeholder="90" className="mt-1 w-full p-2 border rounded" /></div>
-              <div className="flex justify-end space-x-2 pt-2">
-                <button type="button" onClick={()=>setVitalsModal(null)} className="px-4 py-2 bg-gray-200 rounded">Cancel</button>
-                <button type="submit" className="px-4 py-2 bg-purple-600 text-white rounded">Mark Ready</button>
+        <div className="fixed inset-0 bg-gray-900/60 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-[fadeIn_0.2s_ease-out_forwards]">
+          <div className="bg-white rounded-3xl p-8 w-full max-w-md shadow-2xl">
+            <h3 className="text-2xl font-extrabold text-purple-900 mb-6 border-b pb-4">Record Patient Vitals</h3>
+            <div className="bg-purple-50 p-4 rounded-xl mb-6 text-purple-900">
+              <p className="text-sm font-bold mb-1">Patient Arrival</p>
+              <p className="font-semibold text-lg">{vitalsModal.patientName}</p>
+            </div>
+            
+            <form onSubmit={handleVitals} className="space-y-5">
+              <div>
+                <label className="block text-sm font-bold text-gray-700 mb-1">Blood Pressure (mmHg)</label>
+                <input required name="bp" placeholder="e.g., 120/80" className="w-full p-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-purple-500 font-mono" />
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-bold text-gray-700 mb-1">Heart Rate (bpm)</label>
+                  <input required name="hr" type="number" placeholder="e.g., 72" className="w-full p-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-purple-500 font-mono" />
+                </div>
+                <div>
+                  <label className="block text-sm font-bold text-gray-700 mb-1">Glucose (mg/dL)</label>
+                  <input required name="glucose" type="number" placeholder="e.g., 90" className="w-full p-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-purple-500 font-mono" />
+                </div>
+              </div>
+              <div className="flex justify-end space-x-3 pt-4">
+                <button type="button" onClick={()=>setVitalsModal(null)} className="px-6 py-3 bg-gray-100 text-gray-700 font-bold rounded-xl hover:bg-gray-200 transition">Cancel</button>
+                <button type="submit" className="px-6 py-3 bg-purple-600 text-white font-bold rounded-xl hover:bg-purple-700 shadow-lg transition">Mark as Ready</button>
               </div>
             </form>
           </div>
@@ -608,7 +787,8 @@ const DoctorDashboard = ({ db, userId, appId, mode = 'active' }) => {
 
   useEffect(() => {
     if (!db || !appId || !userId) return;
-    const unsubApps = onSnapshot(collection(db, `artifacts/${appId}/appointments`), snap => {
+    const unsubApps = onSnapshot(collection(db, `artifacts/${appId}/public/data/appointments`), snap => {
+      // Client side filtering for doctor specific apps
       const all = snap.docs.map(d => ({id: d.id, ...d.data()})).filter(a => a.doctorId === userId);
       setAppointments(all.sort((a,b) => b.timestamp - a.timestamp));
     });
@@ -617,7 +797,7 @@ const DoctorDashboard = ({ db, userId, appId, mode = 'active' }) => {
 
   const handleComplete = async (e) => {
     e.preventDefault();
-    await updateDoc(doc(db, `artifacts/${appId}/appointments`, consultModal.id), {
+    await updateDoc(doc(db, `artifacts/${appId}/public/data/appointments`, consultModal.id), {
       status: 'completed',
       clinicalNotes: e.target.notes.value
     });
@@ -627,51 +807,112 @@ const DoctorDashboard = ({ db, userId, appId, mode = 'active' }) => {
   const displayApps = appointments.filter(a => mode === 'active' ? a.status === 'ready' : a.status === 'completed');
 
   return (
-    <div className="max-w-5xl mx-auto p-4 sm:p-8 space-y-6">
-      <h2 className="text-2xl font-bold text-blue-900">{mode === 'active' ? 'Patients Ready for Consult' : 'Consultation History'}</h2>
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+    <div className="max-w-6xl mx-auto p-4 sm:p-8 space-y-8 animate-[fadeInUp_0.5s_ease-out_forwards]">
+      <div className="flex justify-between items-center border-b pb-4">
+        <h2 className="text-3xl font-extrabold text-blue-900 flex items-center">
+          <Icon name={mode==='active'?"stethoscope":"history"} className="mr-3 text-blue-500" size={32} />
+          {mode === 'active' ? 'Patients Ready for Consult' : 'My Consultation History'}
+        </h2>
+        <div className="bg-white px-4 py-2 rounded-full shadow-sm font-bold text-gray-600 border border-gray-200">
+          Total: {displayApps.length}
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         {displayApps.map(app => (
-          <div key={app.id} className="bg-white p-5 rounded-2xl shadow-sm border border-gray-200">
-            <div className="flex justify-between items-start mb-2">
-              <h3 className="text-lg font-bold text-gray-900">{app.patientName} <span className="text-sm font-normal text-gray-500">({app.patientAge}y)</span></h3>
-              <span className={`text-xs px-2 py-1 rounded ${mode==='active'?'bg-purple-100 text-purple-800':'bg-green-100 text-green-800'}`}>{app.status.toUpperCase()}</span>
-            </div>
-            <p className="text-sm text-gray-600 mb-3"><strong>Reason:</strong> {app.reason}</p>
-            {app.vitals && (
-              <div className="bg-gray-50 p-3 rounded-lg flex space-x-4 text-sm mb-4">
-                <span><strong>BP:</strong> {app.vitals.bp}</span>
-                <span><strong>HR:</strong> {app.vitals.hr}</span>
-                <span><strong>Gluc:</strong> {app.vitals.glucose}</span>
+          <div key={app.id} className="bg-white p-6 rounded-3xl shadow-xl border border-gray-100 relative overflow-hidden flex flex-col justify-between hover:shadow-2xl transition-shadow duration-300">
+            {mode === 'active' && <div className="absolute top-0 left-0 w-2 h-full bg-purple-500"></div>}
+            {mode === 'history' && <div className="absolute top-0 left-0 w-2 h-full bg-green-500"></div>}
+            
+            <div className="pl-4">
+              <div className="flex justify-between items-start mb-4">
+                <div>
+                  <h3 className="text-xl font-extrabold text-gray-900">{app.patientName}</h3>
+                  <p className="text-sm font-medium text-gray-500">Age: {app.patientAge}y</p>
+                </div>
+                <span className={`text-xs font-bold px-3 py-1 rounded-full border tracking-wide uppercase ${mode==='active'?'bg-purple-100 text-purple-800 border-purple-200':'bg-green-100 text-green-800 border-green-200'}`}>
+                  {app.status}
+                </span>
               </div>
-            )}
-            {mode === 'active' ? (
-               <button onClick={()=>setConsultModal(app)} className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 rounded-xl transition">Start Consult</button>
-            ) : (
-               <div className="text-sm bg-blue-50 text-blue-900 p-3 rounded-lg"><p className="font-bold">Notes:</p>{app.clinicalNotes}</div>
-            )}
+              
+              <div className="mb-5 bg-gray-50 p-4 rounded-xl border border-gray-200">
+                <p className="text-xs font-bold text-gray-500 uppercase mb-1">Reason for Visit</p>
+                <p className="text-sm font-medium text-gray-800">{app.reason}</p>
+              </div>
+
+              {app.vitals && (
+                <div className="mb-6 grid grid-cols-3 gap-2">
+                  <div className="bg-blue-50 p-3 rounded-xl border border-blue-100 text-center">
+                    <p className="text-xs font-bold text-blue-500 uppercase">BP</p>
+                    <p className="font-mono font-bold text-blue-900">{app.vitals.bp}</p>
+                  </div>
+                  <div className="bg-red-50 p-3 rounded-xl border border-red-100 text-center">
+                    <p className="text-xs font-bold text-red-500 uppercase">HR</p>
+                    <p className="font-mono font-bold text-red-900">{app.vitals.hr}</p>
+                  </div>
+                  <div className="bg-yellow-50 p-3 rounded-xl border border-yellow-100 text-center">
+                    <p className="text-xs font-bold text-yellow-600 uppercase">Gluc</p>
+                    <p className="font-mono font-bold text-yellow-900">{app.vitals.glucose}</p>
+                  </div>
+                </div>
+              )}
+
+              {mode === 'active' ? (
+                 <button onClick={()=>setConsultModal(app)} className="w-full bg-blue-600 hover:bg-blue-700 text-white font-extrabold py-3 rounded-xl shadow-md transition-all transform hover:-translate-y-1">
+                   Start Consultation
+                 </button>
+              ) : (
+                 <div className="mt-auto">
+                   <p className="text-xs font-bold text-green-700 uppercase mb-2 flex items-center"><Icon name="checkCircle" size={14} className="mr-1" /> Clinical Notes</p>
+                   <div className="text-sm bg-green-50 border border-green-100 text-gray-800 p-4 rounded-xl whitespace-pre-wrap leading-relaxed shadow-inner">
+                     {app.clinicalNotes}
+                   </div>
+                 </div>
+              )}
+            </div>
           </div>
         ))}
-        {displayApps.length === 0 && <p className="text-gray-500">No patients found.</p>}
+        {displayApps.length === 0 && (
+          <div className="col-span-full text-center p-12 bg-white rounded-3xl border border-dashed border-gray-300">
+            <Icon name="checkCircle" size={64} className="mx-auto text-gray-300 mb-4" />
+            <h3 className="text-xl font-bold text-gray-500">All caught up!</h3>
+            <p className="text-gray-400">No {mode === 'active' ? 'pending patients' : 'history found'}.</p>
+          </div>
+        )}
       </div>
 
       {consultModal && (
-        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 z-50">
-          <div className="bg-white rounded-2xl p-6 w-full max-w-2xl shadow-2xl flex flex-col h-[80vh]">
-            <h3 className="text-xl font-bold mb-4">Consultation: {consultModal.patientName}</h3>
-            <div className="bg-gray-50 p-4 rounded-lg mb-4 text-sm flex-shrink-0">
-              <p><strong>Reason:</strong> {consultModal.reason}</p>
-              <div className="flex space-x-4 mt-2">
-                <span><strong>BP:</strong> {consultModal.vitals?.bp}</span>
-                <span><strong>HR:</strong> {consultModal.vitals?.hr}</span>
-                <span><strong>Gluc:</strong> {consultModal.vitals?.glucose}</span>
+        <div className="fixed inset-0 bg-gray-900/80 backdrop-blur-md flex items-center justify-center p-4 z-50 animate-[fadeIn_0.2s_ease-out_forwards]">
+          <div className="bg-white rounded-3xl p-6 sm:p-8 w-full max-w-3xl shadow-2xl flex flex-col h-[85vh] sm:h-[80vh]">
+            <h3 className="text-2xl font-extrabold text-blue-900 mb-4 border-b pb-4 flex items-center">
+              <Icon name="stethoscope" className="mr-3 text-blue-600" size={28} />
+              Consultation: {consultModal.patientName}
+            </h3>
+            
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6 flex-shrink-0">
+              <div className="bg-gray-50 p-4 rounded-2xl border border-gray-200">
+                <p className="text-xs font-bold text-gray-500 uppercase mb-1">Reason</p>
+                <p className="font-medium text-gray-800">{consultModal.reason}</p>
+              </div>
+              <div className="bg-purple-50 p-4 rounded-2xl border border-purple-200 flex items-center justify-around">
+                <div className="text-center"><p className="text-xs font-bold text-purple-600 uppercase">BP</p><p className="font-mono font-bold text-purple-900">{consultModal.vitals?.bp}</p></div>
+                <div className="w-px h-8 bg-purple-200"></div>
+                <div className="text-center"><p className="text-xs font-bold text-purple-600 uppercase">HR</p><p className="font-mono font-bold text-purple-900">{consultModal.vitals?.hr}</p></div>
+                <div className="w-px h-8 bg-purple-200"></div>
+                <div className="text-center"><p className="text-xs font-bold text-purple-600 uppercase">Gluc</p><p className="font-mono font-bold text-purple-900">{consultModal.vitals?.glucose}</p></div>
               </div>
             </div>
+
             <form onSubmit={handleComplete} className="flex-grow flex flex-col">
-              <label className="block text-sm font-bold mb-1">Clinical Notes & Prescriptions</label>
-              <textarea required name="notes" className="flex-grow w-full p-3 border rounded-xl resize-none focus:ring-blue-500 mb-4" placeholder="Enter findings and prescribed medications..." />
-              <div className="flex justify-end space-x-2 flex-shrink-0">
-                <button type="button" onClick={()=>setConsultModal(null)} className="px-6 py-2 bg-gray-200 rounded-xl font-bold">Cancel</button>
-                <button type="submit" className="px-6 py-2 bg-green-600 hover:bg-green-700 text-white rounded-xl font-bold transition">Complete Consult</button>
+              <label className="block text-sm font-extrabold text-gray-700 mb-2 uppercase tracking-wide">Clinical Notes & Prescriptions</label>
+              <textarea 
+                required name="notes" 
+                className="flex-grow w-full p-4 border border-gray-300 rounded-2xl resize-none focus:ring-4 focus:ring-blue-100 focus:border-blue-500 mb-6 shadow-inner text-base leading-relaxed" 
+                placeholder="Type your diagnosis, findings, and prescribed medications here. This will be visible to the patient." 
+              />
+              <div className="flex justify-end space-x-3 flex-shrink-0">
+                <button type="button" onClick={()=>setConsultModal(null)} className="px-6 py-4 bg-gray-100 text-gray-700 font-extrabold rounded-xl hover:bg-gray-200 transition">Cancel</button>
+                <button type="submit" className="px-8 py-4 bg-green-600 hover:bg-green-700 text-white font-extrabold rounded-xl shadow-lg transition transform hover:-translate-y-1">Complete Consultation</button>
               </div>
             </form>
           </div>
@@ -684,17 +925,17 @@ const DoctorDashboard = ({ db, userId, appId, mode = 'active' }) => {
 const AdminDashboard = ({ db, appId }) => {
   const [users, setUsers] = useState([]);
   const [appointments, setAppointments] = useState([]);
-  const [activeTab, setActiveTab] = useState('stats'); // stats, approvals, directory, logs
+  const [activeTab, setActiveTab] = useState('stats');
 
   useEffect(() => {
     if (!db || !appId) return;
-    const unsubUsers = onSnapshot(collection(db, `artifacts/${appId}/all_users`), snap => setUsers(snap.docs.map(d=>({id:d.id, ...d.data()}))));
-    const unsubApps = onSnapshot(collection(db, `artifacts/${appId}/appointments`), snap => setAppointments(snap.docs.map(d=>({id:d.id, ...d.data()}))));
+    const unsubUsers = onSnapshot(collection(db, `artifacts/${appId}/public/data/all_users`), snap => setUsers(snap.docs.map(d=>({id:d.id, ...d.data()}))));
+    const unsubApps = onSnapshot(collection(db, `artifacts/${appId}/public/data/appointments`), snap => setAppointments(snap.docs.map(d=>({id:d.id, ...d.data()}))));
     return () => { unsubUsers(); unsubApps(); };
   }, [db, appId]);
 
   const handleApprove = async (uid) => {
-    await updateDoc(doc(db, `artifacts/${appId}/all_users`, uid), { status: 'approved' });
+    await updateDoc(doc(db, `artifacts/${appId}/public/data/all_users`, uid), { status: 'approved' });
     await updateDoc(doc(db, `artifacts/${appId}/users/${uid}/profile`, 'data'), { status: 'approved' });
   };
 
@@ -702,19 +943,26 @@ const AdminDashboard = ({ db, appId }) => {
   const sortedApps = [...appointments].sort((a,b) => b.timestamp - a.timestamp);
 
   const tabs = [
-    { id: 'stats', label: 'Dashboard Stats' },
-    { id: 'approvals', label: `Approvals (${pendingUsers.length})` },
-    { id: 'directory', label: 'User Directory' },
-    { id: 'logs', label: 'System Logs' },
+    { id: 'stats', label: 'Overview', icon: 'home' },
+    { id: 'approvals', label: `Pending Approvals (${pendingUsers.length})`, icon: 'alertTriangle' },
+    { id: 'directory', label: 'Global Directory', icon: 'users' },
+    { id: 'logs', label: 'System Logs', icon: 'history' },
   ];
 
   return (
-    <div className="max-w-7xl mx-auto p-4 sm:p-8 flex flex-col h-full">
-      <h2 className="text-3xl font-extrabold text-blue-900 mb-6 flex-shrink-0">Admin Control Center</h2>
+    <div className="max-w-7xl mx-auto p-4 sm:p-8 flex flex-col h-full animate-[fadeInUp_0.5s_ease-out_forwards]">
+      <h2 className="text-3xl font-extrabold text-blue-900 mb-6 flex-shrink-0 flex items-center">
+        <Icon name="users" size={32} className="mr-3 text-blue-500" />
+        Admin Control Center
+      </h2>
       
-      <div className="flex space-x-2 border-b border-gray-200 mb-6 flex-shrink-0 overflow-x-auto">
+      <div className="bg-white p-2 rounded-2xl shadow-sm border border-gray-200 mb-6 flex-shrink-0 flex overflow-x-auto">
         {tabs.map(t => (
-          <button key={t.id} onClick={()=>setActiveTab(t.id)} className={`px-4 py-2 font-medium whitespace-nowrap border-b-2 transition ${activeTab === t.id ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700'}`}>
+          <button 
+            key={t.id} onClick={()=>setActiveTab(t.id)} 
+            className={`flex items-center px-6 py-3 font-bold text-sm whitespace-nowrap rounded-xl transition-all duration-200 ${activeTab === t.id ? 'bg-blue-600 text-white shadow-md' : 'text-gray-500 hover:bg-gray-100 hover:text-gray-900'}`}
+          >
+            <Icon name={t.icon} size={18} className="mr-2" />
             {t.label}
           </button>
         ))}
@@ -722,35 +970,84 @@ const AdminDashboard = ({ db, appId }) => {
 
       <div className="flex-grow overflow-y-auto pr-2 pb-8">
         {activeTab === 'stats' && (
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-            <div className="bg-white p-6 rounded-2xl shadow-sm border border-blue-100 text-center"><p className="text-gray-500 text-sm">Total Users</p><p className="text-3xl font-bold text-blue-600">{users.length}</p></div>
-            <div className="bg-white p-6 rounded-2xl shadow-sm border border-green-100 text-center"><p className="text-gray-500 text-sm">Active Doctors</p><p className="text-3xl font-bold text-green-600">{users.filter(u=>u.role==='doctor' && u.status==='approved').length}</p></div>
-            <div className="bg-white p-6 rounded-2xl shadow-sm border border-purple-100 text-center"><p className="text-gray-500 text-sm">Total Consults</p><p className="text-3xl font-bold text-purple-600">{appointments.length}</p></div>
-            <div className="bg-white p-6 rounded-2xl shadow-sm border border-yellow-100 text-center"><p className="text-gray-500 text-sm">Pending Staff</p><p className="text-3xl font-bold text-yellow-600">{pendingUsers.length}</p></div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
+            <div className="bg-white p-8 rounded-3xl shadow-xl border border-blue-100 text-center relative overflow-hidden">
+              <div className="absolute -right-4 -top-4 opacity-10 text-blue-500"><Icon name="users" size={100} /></div>
+              <p className="text-gray-500 font-extrabold text-sm uppercase tracking-wider mb-2 relative z-10">Total Users</p>
+              <p className="text-5xl font-extrabold text-blue-600 relative z-10">{users.length}</p>
+            </div>
+            <div className="bg-white p-8 rounded-3xl shadow-xl border border-green-100 text-center relative overflow-hidden">
+               <div className="absolute -right-4 -top-4 opacity-10 text-green-500"><Icon name="stethoscope" size={100} /></div>
+              <p className="text-gray-500 font-extrabold text-sm uppercase tracking-wider mb-2 relative z-10">Active Doctors</p>
+              <p className="text-5xl font-extrabold text-green-600 relative z-10">{users.filter(u=>u.role==='doctor' && u.status==='approved').length}</p>
+            </div>
+            <div className="bg-white p-8 rounded-3xl shadow-xl border border-purple-100 text-center relative overflow-hidden">
+               <div className="absolute -right-4 -top-4 opacity-10 text-purple-500"><Icon name="calendar" size={100} /></div>
+              <p className="text-gray-500 font-extrabold text-sm uppercase tracking-wider mb-2 relative z-10">Total Consults</p>
+              <p className="text-5xl font-extrabold text-purple-600 relative z-10">{appointments.length}</p>
+            </div>
+            <div className="bg-white p-8 rounded-3xl shadow-xl border border-yellow-100 text-center relative overflow-hidden">
+               <div className="absolute -right-4 -top-4 opacity-10 text-yellow-500"><Icon name="alertTriangle" size={100} /></div>
+              <p className="text-gray-500 font-extrabold text-sm uppercase tracking-wider mb-2 relative z-10">Pending Staff</p>
+              <p className="text-5xl font-extrabold text-yellow-600 relative z-10">{pendingUsers.length}</p>
+            </div>
           </div>
         )}
 
         {activeTab === 'approvals' && (
-          <div className="bg-white shadow-sm border border-gray-200 rounded-2xl overflow-hidden">
+          <div className="bg-white shadow-xl border border-gray-200 rounded-3xl overflow-hidden">
             <table className="min-w-full divide-y divide-gray-200">
-              <thead className="bg-gray-50"><tr><th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Name</th><th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Role</th><th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Email</th><th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">Action</th></tr></thead>
+              <thead className="bg-gray-50"><tr>
+                <th className="px-6 py-4 text-left text-xs font-bold text-gray-500 uppercase tracking-wider">User Info</th>
+                <th className="px-6 py-4 text-left text-xs font-bold text-gray-500 uppercase tracking-wider">Requested Role</th>
+                <th className="px-6 py-4 text-right text-xs font-bold text-gray-500 uppercase tracking-wider">Action</th>
+              </tr></thead>
               <tbody className="divide-y divide-gray-200">
                 {pendingUsers.map(u => (
-                  <tr key={u.id}><td className="px-6 py-4 text-sm font-medium">{u.name}</td><td className="px-6 py-4 text-sm uppercase">{u.role}</td><td className="px-6 py-4 text-sm text-gray-500">{u.email}</td><td className="px-6 py-4 text-right"><button onClick={()=>handleApprove(u.id)} className="bg-green-500 text-white px-4 py-1 rounded-lg hover:bg-green-600 text-sm font-bold">Approve</button></td></tr>
+                  <tr key={u.id} className="hover:bg-gray-50 transition">
+                    <td className="px-6 py-4">
+                      <div className="text-sm font-extrabold text-gray-900">{u.name}</div>
+                      <div className="text-sm text-gray-500">{u.email}</div>
+                    </td>
+                    <td className="px-6 py-4">
+                      <span className="bg-yellow-100 text-yellow-800 border border-yellow-200 px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wide">
+                        {u.role}
+                      </span>
+                    </td>
+                    <td className="px-6 py-4 text-right">
+                      <button onClick={()=>handleApprove(u.id)} className="bg-green-500 text-white px-6 py-2 rounded-xl hover:bg-green-600 text-sm font-bold shadow-md transform hover:-translate-y-0.5 transition">
+                        Approve Access
+                      </button>
+                    </td>
+                  </tr>
                 ))}
-                {pendingUsers.length === 0 && <tr><td colSpan="4" className="px-6 py-4 text-center text-sm text-gray-500">No pending approvals.</td></tr>}
+                {pendingUsers.length === 0 && <tr><td colSpan="3" className="px-6 py-16 text-center text-gray-500 font-bold text-lg"><Icon name="checkCircle" size={48} className="mx-auto mb-4 text-green-400" />No pending approvals required.</td></tr>}
               </tbody>
             </table>
           </div>
         )}
 
         {activeTab === 'directory' && (
-          <div className="bg-white shadow-sm border border-gray-200 rounded-2xl overflow-hidden">
+          <div className="bg-white shadow-xl border border-gray-200 rounded-3xl overflow-hidden">
             <table className="min-w-full divide-y divide-gray-200">
-              <thead className="bg-gray-50"><tr><th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Name/Email</th><th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Role</th><th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Demographics</th><th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th></tr></thead>
+              <thead className="bg-gray-50"><tr>
+                <th className="px-6 py-4 text-left text-xs font-bold text-gray-500 uppercase tracking-wider">Name/Email</th>
+                <th className="px-6 py-4 text-left text-xs font-bold text-gray-500 uppercase tracking-wider">Role</th>
+                <th className="px-6 py-4 text-left text-xs font-bold text-gray-500 uppercase tracking-wider">Demographics</th>
+                <th className="px-6 py-4 text-left text-xs font-bold text-gray-500 uppercase tracking-wider">Status</th>
+              </tr></thead>
               <tbody className="divide-y divide-gray-200">
                 {users.map(u => (
-                  <tr key={u.id}><td className="px-6 py-4"><div className="text-sm font-medium">{u.name}</div><div className="text-xs text-gray-500">{u.email}</div></td><td className="px-6 py-4 text-sm uppercase">{u.role}</td><td className="px-6 py-4 text-sm">{u.age ? `${u.age}y` : 'N/A'}, {u.gender || 'N/A'}</td><td className="px-6 py-4 text-sm"><span className={`px-2 py-1 rounded text-xs ${u.status==='approved'?'bg-green-100 text-green-800':'bg-yellow-100 text-yellow-800'}`}>{u.status}</span></td></tr>
+                  <tr key={u.id} className="hover:bg-gray-50">
+                    <td className="px-6 py-4"><div className="text-sm font-extrabold text-gray-900">{u.name}</div><div className="text-xs text-gray-500">{u.email}</div></td>
+                    <td className="px-6 py-4"><span className="text-xs font-bold uppercase text-gray-600 bg-gray-100 px-2 py-1 rounded-md border">{u.role}</span></td>
+                    <td className="px-6 py-4 text-sm font-medium text-gray-600">{u.age ? `${u.age}y` : 'N/A'}, {u.gender || 'N/A'}</td>
+                    <td className="px-6 py-4 text-sm">
+                      <span className={`px-3 py-1 rounded-full text-xs font-bold border tracking-wide uppercase ${u.status==='approved'?'bg-green-100 text-green-800 border-green-200':'bg-yellow-100 text-yellow-800 border-yellow-200'}`}>
+                        {u.status}
+                      </span>
+                    </td>
+                  </tr>
                 ))}
               </tbody>
             </table>
@@ -758,11 +1055,509 @@ const AdminDashboard = ({ db, appId }) => {
         )}
 
         {activeTab === 'logs' && (
-          <div className="space-y-3">
+          <div className="space-y-4">
+            <div className="bg-white p-4 rounded-2xl shadow-sm border border-gray-200 text-sm font-bold text-gray-600 flex items-center">
+              <Icon name="history" className="mr-2" /> Global Chronological Event Stream
+            </div>
             {sortedApps.map(app => (
-              <div key={app.id} className="bg-white p-3 border border-gray-200 rounded-lg shadow-sm text-sm flex flex-col sm:flex-row justify-between">
-                <div><span className="font-bold text-gray-700">{new Date(app.timestamp).toLocaleString()}:</span> Patient <span className="font-semibold">{app.patientName}</span> requested consult.</div>
-                <div className="font-medium text-blue-600 uppercase">[{app.status}]</div>
+              <div key={app.id} className="bg-white p-5 border border-gray-200 rounded-2xl shadow-sm hover:shadow-md transition text-sm flex flex-col sm:flex-row justify-between items-start sm:items-center">
+                <div className="mb-2 sm:mb-0 flex items-center">
+                  <div className="w-2 h-2 rounded-full bg-blue-500 mr-3"></div>
+                  <span className="font-bold text-gray-800 mr-2 w-48 text-xs">{new Date(app.timestamp).toLocaleString()}</span>
+                  <span className="text-gray-600 text-base">Patient <span className="font-extrabold text-blue-900">{app.patientName}</span> consultation log.</span>
+                </div>
+                <div className="font-extrabold text-xs px-3 py-1 bg-gray-100 border rounded-lg text-gray-700 uppercase tracking-wider">STATE: {app.status}</div>
+              </div>
+            ))}
+             {sortedApps.length === 0 && <div className="text-center p-8 text-gray-500 font-bold bg-white rounded-2xl">No system logs generated yet.</div>}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+// =================================================================================
+// --- ORIGINAL CORE PAGES (PRESERVED AESTHETICS & LOGIC) ---
+// =================================================================================
+
+const HomePage = ({ onNavigate }) => (
+  <div className="h-full flex flex-col items-center justify-center relative bg-gradient-to-br from-blue-600 via-blue-500 to-cyan-500 p-4 sm:p-8 overflow-hidden">
+    <div className="absolute inset-0 opacity-20 bg-[url('https://www.transparenttextures.com/patterns/cubes.png')]"></div>
+    <div className="absolute w-96 h-96 bg-cyan-400 rounded-full blur-3xl opacity-30 top-10 left-10 animate-pulse"></div>
+    <div className="absolute w-96 h-96 bg-blue-800 rounded-full blur-3xl opacity-30 bottom-10 right-10 animate-pulse delay-1000"></div>
+
+    <div className="z-10 text-center text-white p-4 max-w-4xl bg-white/10 backdrop-blur-md rounded-3xl border border-white/20 shadow-2xl p-10 animate-[fadeInUp_0.6s_ease-out_forwards]">
+      <div className="mx-auto bg-white w-20 h-20 rounded-2xl flex items-center justify-center mb-8 shadow-xl">
+        <Icon name="stethoscope" size={48} className="text-blue-600" />
+      </div>
+      <h1 className="text-5xl md:text-7xl font-extrabold mb-6 drop-shadow-2xl tracking-tight leading-tight">
+        Vaidya <span className="text-cyan-300">Mithra</span> HMIS
+      </h1>
+      <p className="text-xl md:text-2xl mb-10 font-medium drop-shadow-md text-blue-50">
+        Enterprise Hospital Management & AI Triage Ecosystem
+      </p>
+      <button 
+        onClick={() => onNavigate('appointments')} 
+        className="inline-flex items-center px-10 py-4 bg-green-500 text-white text-xl font-extrabold rounded-full shadow-[0_10px_20px_rgba(34,197,94,0.4)] hover:bg-green-400 hover:shadow-[0_15px_30px_rgba(34,197,94,0.6)] transition-all duration-300 transform hover:-translate-y-1"
+      >
+        Access Dashboard
+        <Icon name="chevronRight" size={28} className="ml-3" color="white" />
+      </button>
+    </div>
+  </div>
+);
+
+const HospitalPage = () => {
+  const [status, setStatus] = useState('ready');
+
+  const findHospitals = () => {
+    if (!navigator.geolocation) {
+      setStatus('error');
+      console.warn("Geolocation is not supported by your browser.");
+      return;
+    }
+    setStatus('loading');
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        setStatus('found');
+        const lat = position.coords.latitude;
+        const lon = position.coords.longitude;
+        window.open(`https://www.google.com/maps/search/?api=1&query=hospitals+near+${lat},${lon}`, '_blank');
+      },
+      (error) => {
+        console.error("Geolocation error:", error);
+        setStatus('error');
+      },
+      { enableHighAccuracy: true, timeout: 5000, maximumAge: 0 }
+    );
+  };
+
+  return (
+    <div id="hospitals-page" className="h-full flex items-center justify-center p-4 sm:p-8 bg-gray-50 relative overflow-hidden">
+       {/* Background Decoration */}
+       <div className="absolute top-0 right-0 w-1/2 h-full bg-blue-50 rounded-l-[100px] opacity-50 transform translate-x-20"></div>
+
+      <div className="bg-white shadow-2xl rounded-3xl p-8 sm:p-12 border border-gray-100 transition-all duration-300 max-w-2xl w-full z-10 animate-[fadeInUp_0.5s_ease-out_forwards]">
+        <div className="flex items-center justify-center w-20 h-20 bg-blue-100 rounded-full mb-8">
+           <Icon name="hospital" size={40} className="text-blue-600" />
+        </div>
+        <h2 className="text-3xl sm:text-4xl font-extrabold text-blue-900 mb-6">
+          Emergency Facility Locator
+        </h2>
+        <p className="text-gray-600 mb-8 text-lg leading-relaxed">
+          Quickly find the nearest medical facilities, clinics, and trauma centers. We use your secure GPS location to instantly launch a localized Google Maps search query.
+        </p>
+
+        <div className="flex flex-col sm:flex-row items-center space-y-4 sm:space-y-0 sm:space-x-4">
+          <button
+            onClick={findHospitals}
+            disabled={status === 'loading'}
+            className="w-full sm:w-auto bg-blue-600 hover:bg-blue-700 text-white font-extrabold py-4 px-8 rounded-2xl shadow-lg transition-all duration-300 disabled:opacity-50 flex items-center justify-center transform hover:-translate-y-1"
+          >
+            {status === 'loading' ? (
+              <span className="flex items-center">
+                <svg className="animate-spin -ml-1 mr-3 h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+                Acquiring Satellite Lock...
+              </span>
+            ) : (
+              <span className="flex items-center text-lg">
+                Locate Hospitals <Icon name="chevronRight" size={24} className="ml-2" color="white" />
+              </span>
+            )}
+          </button>
+          {status === 'found' && <p className="text-sm font-bold text-green-600 bg-green-50 px-4 py-2 rounded-xl border border-green-200">Maps Launched Successfully!</p>}
+          {status === 'error' && <p className="text-sm font-bold text-red-600 bg-red-50 px-4 py-2 rounded-xl border border-red-200">Location Access Denied / Failed</p>}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const DocBotPage = ({ db, userId, authReady, appId }) => {
+  const CHAT_BOT_SYSTEM_INSTRUCTION = "You are a friendly, non-diagnostic AI assistant named DocBot inside the Vaidya Mithra HMIS. Your role is to answer general health questions, provide basic medical information, explain symptoms, and offer clear advice on when to see a doctor. Never provide a formal diagnosis, treatment, or specific medication advice. Keep responses encouraging and concise. Use Google Search grounding when necessary.";
+
+  const [chatHistory, setChatHistory] = useState([]);
+  const [currentMessage, setCurrentMessage] = useState('');
+  const [isTyping, setIsTyping] = useState(false);
+  const messagesEndRef = useRef(null);
+
+  const suggestedQuestions = [
+    "What are the symptoms of the flu?",
+    "How can I relieve a headache safely?",
+    "Explain hypertension simply.",
+  ];
+
+  const scrollToBottom = () => { messagesEndRef.current?.scrollIntoView({ behavior: "smooth" }); };
+  useEffect(scrollToBottom, [chatHistory]);
+
+  useEffect(() => {
+    if (!authReady || !userId || !db || !appId) return;
+    try {
+      const q = query(collection(db, `artifacts/${appId}/users/${userId}/docbot_chat`), orderBy('timestamp', 'asc'), limit(50));
+      const unsubscribe = onSnapshot(q, (snapshot) => {
+        setChatHistory(snapshot.docs.map(doc => ({...doc.data(), id: doc.id })));
+      });
+      return () => unsubscribe();
+    } catch (e) {
+      console.error("Firestore Chat Setup Failed:", e);
+    }
+  }, [db, userId, authReady, appId]);
+
+  const fetchWithBackoff = useCallback(async (url, options, retries = 3, delay = 1000) => {
+    for (let i = 0; i < retries; i++) {
+      try {
+        const response = await fetch(url, options);
+        if (response.ok) return response;
+        if (response.status === 429 && i < retries - 1) {
+          await new Promise(resolve => setTimeout(resolve, delay));
+          delay *= 2; continue;
+        }
+        throw new Error(`API status ${response.status}`);
+      } catch (error) {
+        if (i === retries - 1) throw error;
+        await new Promise(resolve => setTimeout(resolve, delay));
+        delay *= 2;
+      }
+    }
+  }, []);
+
+  const handleSend = async (messageText) => {
+    const message = (typeof messageText === 'string') ? messageText : currentMessage;
+    if (!message.trim() || isTyping || !db || !userId || !appId) return;
+
+    const userMessage = message.trim();
+    setCurrentMessage('');
+    const chatCollectionRef = collection(db, `artifacts/${appId}/users/${userId}/docbot_chat`);
+    
+    // Save user message
+    await setDoc(doc(chatCollectionRef), { text: userMessage, role: 'user', timestamp: serverTimestamp() });
+    setIsTyping(true);
+
+    try {
+      const apiHistory = chatHistory.map(msg => ({
+        role: msg.role === 'ai' ? 'model' : 'user',
+        parts: [{ text: msg.text }]
+      }));
+      apiHistory.push({ role: 'user', parts: [{ text: userMessage }] });
+
+      const payload = {
+        contents: apiHistory,
+        tools: [{ "google_search": {} }],
+        systemInstruction: { parts: [{ text: CHAT_BOT_SYSTEM_INSTRUCTION }] },
+      };
+
+      const response = await fetchWithBackoff(GEMINI_API_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+      const result = await response.json();
+      const aiText = result.candidates?.[0]?.content?.parts?.[0]?.text || "Sorry, I couldn't process that right now.";
+      
+      // Save AI response
+      await setDoc(doc(chatCollectionRef), { text: aiText, role: 'ai', timestamp: serverTimestamp() });
+    } catch (error) {
+      await setDoc(doc(chatCollectionRef), { text: "Network error connecting to AI core.", role: 'ai_error', timestamp: serverTimestamp() });
+    } finally {
+      setIsTyping(false);
+    }
+  };
+
+  return (
+    <div className="h-full p-4 sm:p-8 flex flex-col bg-gray-50">
+      <div className="bg-white shadow-2xl rounded-3xl p-4 sm:p-8 border border-gray-100 flex flex-col flex-grow h-full overflow-hidden animate-[fadeInUp_0.5s_ease-out_forwards]">
+        
+        <div className="flex items-center justify-between border-b border-gray-100 pb-4 mb-4 flex-shrink-0">
+          <h2 className="text-2xl font-extrabold text-blue-900 flex items-center">
+            <div className="bg-green-100 p-2 rounded-xl mr-3"><Icon name="messageSquare" size={28} className="text-green-600" /></div>
+            DocBot Assistant
+          </h2>
+          <div className="flex items-center text-xs font-bold text-green-600 bg-green-50 px-3 py-1 rounded-full border border-green-200">
+            <span className="w-2 h-2 rounded-full bg-green-500 mr-2 animate-pulse"></span> Online
+          </div>
+        </div>
+
+        <div className="flex-grow overflow-y-auto p-4 mb-4 bg-gray-50 rounded-2xl border border-gray-100 flex flex-col space-y-4 shadow-inner">
+          {chatHistory.length === 0 && !isTyping ? (
+            <div className="text-center text-gray-500 m-auto animate-[fadeIn_0.5s_0.3s_ease-out_forwards]">
+              <div className="bg-white w-24 h-24 rounded-full flex items-center justify-center mx-auto mb-6 shadow-sm border border-gray-100">
+                <Icon name="stethoscope" size={48} className="text-blue-400" />
+              </div>
+              <p className="text-lg font-medium text-gray-700">Hello! I am DocBot.</p>
+              <p className="text-sm mb-8">Ask me general health questions while you wait.</p>
+              
+              <div>
+                <h4 className="text-xs font-extrabold text-gray-400 uppercase tracking-wider mb-4 flex items-center justify-center">
+                  <Icon name="lightbulb" size={16} className="mr-2 text-yellow-500" /> Try asking
+                </h4>
+                <div className="flex flex-col sm:flex-row gap-3 justify-center">
+                  {suggestedQuestions.map((q) => (
+                    <button key={q} onClick={() => handleSend(q)} className="px-5 py-3 bg-white text-blue-700 border border-blue-100 rounded-2xl text-sm font-bold transition-all duration-200 hover:bg-blue-50 hover:shadow-md transform hover:-translate-y-1">
+                      "{q}"
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+          ) : (
+            chatHistory.map(msg => (
+               <div key={msg.id} className={`max-w-[85%] sm:max-w-md p-4 rounded-2xl shadow-sm text-sm leading-relaxed ${
+                 msg.role === 'user' 
+                   ? 'bg-blue-600 text-white self-end rounded-br-none shadow-blue-200' 
+                   : msg.role === 'ai_error' 
+                   ? 'bg-red-50 text-red-800 self-start border border-red-200 rounded-tl-none' 
+                   : 'bg-white text-gray-800 self-start border border-gray-200 rounded-tl-none'
+               }`}>
+                 <p className="whitespace-pre-wrap">{msg.text}</p>
+               </div>
+            ))
+          )}
+          {isTyping && (
+             <div className="self-start bg-white border border-gray-200 p-4 rounded-2xl rounded-tl-none shadow-sm flex items-center space-x-2 w-20">
+                <div className="w-2 h-2 bg-blue-400 rounded-full animate-bounce"></div>
+                <div className="w-2 h-2 bg-blue-400 rounded-full animate-bounce" style={{animationDelay: "0.2s"}}></div>
+                <div className="w-2 h-2 bg-blue-400 rounded-full animate-bounce" style={{animationDelay: "0.4s"}}></div>
+             </div>
+          )}
+          <div ref={messagesEndRef} />
+        </div>
+
+        <div className="flex space-x-3 flex-shrink-0 bg-white p-2 rounded-2xl border border-gray-200 shadow-sm">
+          <input
+            type="text" value={currentMessage} onChange={(e) => setCurrentMessage(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleSend()}
+            className="flex-grow p-4 bg-transparent focus:outline-none text-gray-800"
+            placeholder={!authReady ? "Connecting..." : "Type your health question here..."}
+            disabled={isTyping || !authReady}
+          />
+          <button
+            onClick={() => handleSend()} disabled={isTyping || !currentMessage.trim() || !authReady}
+            className="bg-blue-600 hover:bg-blue-700 text-white font-bold w-14 h-14 rounded-xl transition-all shadow-md disabled:opacity-50 flex items-center justify-center transform hover:scale-105"
+          >
+            <Icon name="send" size={24} color="white" />
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const ContactPage = () => {
+  const team = [
+    { name: "Dilip Kumar A N", phone: "7259447817", email: "dilipkumaran.ec23@rvce.edu.in" },
+    { name: "Arya B V", phone: "8050141198", email: "aryabv.ec23@rvce.edu.in" },
+  ];
+
+  return (
+    <div className="h-full flex items-center justify-center p-4 sm:p-6 bg-gray-50">
+      <div className="bg-white shadow-2xl rounded-3xl p-8 sm:p-12 border border-gray-100 max-w-4xl w-full text-center animate-[fadeInUp_0.5s_ease-out_forwards]">
+        <div className="w-20 h-20 bg-blue-100 rounded-full flex items-center justify-center mx-auto mb-6">
+          <Icon name="mail" size={40} className="text-blue-600" />
+        </div>
+        <h2 className="text-4xl font-extrabold text-blue-900 mb-4">Support & Contact</h2>
+        <p className="text-gray-500 mb-10 text-lg">For technical support, legal inquiries, or system access questions.</p>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 text-left">
+          {team.map((person) => (
+            <div key={person.name} className="bg-gray-50 border border-gray-200 p-6 rounded-2xl shadow-sm hover:shadow-md transition-shadow hover:border-blue-300">
+              <p className="font-extrabold text-xl text-blue-900 mb-4">{person.name}</p>
+              <div className="space-y-3">
+                <div className="flex items-center text-gray-700 bg-white p-3 rounded-xl border border-gray-100">
+                  <Icon name="phone" size={18} className="mr-3 text-blue-500" />
+                  <a href={`tel:${person.phone}`} className="hover:text-blue-600 font-medium transition">{person.phone}</a>
+                </div>
+                <div className="flex items-center text-gray-700 bg-white p-3 rounded-xl border border-gray-100">
+                  <Icon name="mail" size={18} className="mr-3 text-blue-500" />
+                  <a href={`mailto:${person.email}`} className="hover:text-blue-600 font-medium transition text-sm">{person.email}</a>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// -----------------------------
+// HEAVILY STYLED PREDICTION PAGE
+// -----------------------------
+const PredictionPage = ({ db, userId, authReady, appId, userProfile }) => {
+  const [selectedSymptoms, setSelectedSymptoms] = useState([]);
+  const [predictionResult, setPredictionResult] = useState(null);
+  const [isLoading, setIsLoading] = useState(false);
+  const [activeCategory, setActiveCategory] = useState(SYMPTOM_CATEGORIES[0]);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [history, setHistory] = useState([]);
+
+  // Fetch History
+  useEffect(() => {
+    if (!authReady || !userId || !db || !appId) return;
+    try {
+      const historyCollectionRef = collection(db, `artifacts/${appId}/users/${userId}/symptom_history`);
+      const q = query(historyCollectionRef, orderBy('timestamp', 'desc'), limit(5));
+      const unsubscribe = onSnapshot(q, (snapshot) => {
+        setHistory(snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id })));
+      });
+      return () => unsubscribe();
+    } catch (e) {
+      console.error("Firestore History Listener Failed:", e);
+    }
+  }, [db, userId, authReady, appId]);
+
+  const handlePrediction = async () => {
+    if (selectedSymptoms.length === 0) return;
+    setIsLoading(true); setPredictionResult(null);
+
+    // Scroll to results
+    setTimeout(() => { document.getElementById('prediction-results')?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }, 100);
+
+    const userAge = userProfile?.age || 30;
+    const userGender = userProfile?.gender || 'Unknown';
+    const userQuery = `The patient is a ${userAge} year old ${userGender}. They are currently experiencing the following symptoms: ${selectedSymptoms.join(', ')}. Please act as a professional medical analyst and provide the top 3 most likely differential diagnoses, a confidence score (0.0 to 1.0) for each, and non-alarming, concise next steps/advice. Focus strictly on the JSON output format.`;
+
+    try {
+      const payload = {
+        contents: [{ parts: [{ text: userQuery }] }],
+        generationConfig: { responseMimeType: "application/json", responseSchema: JSON_SCHEMA },
+      };
+      const response = await fetch(GEMINI_API_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+      const result = await response.json();
+      const parsedResult = JSON.parse(result.candidates[0].content.parts[0].text);
+      setPredictionResult(parsedResult);
+      
+      if (db && userId && appId) {
+        const historyCollectionRef = collection(db, `artifacts/${appId}/users/${userId}/symptom_history`);
+        await setDoc(doc(historyCollectionRef), {
+          symptoms: selectedSymptoms, age: userAge, gender: userGender, result: parsedResult, timestamp: serverTimestamp(),
+        });
+      }
+    } catch (error) {
+      setPredictionResult({ error: `Could not retrieve AI prediction. ${error.message}` });
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const filteredSymptoms = useMemo(() => {
+    let symptoms = searchQuery ? SYMPTOM_CATEGORIES.flatMap(cat => ALL_SYMPTOMS_CATEGORIZED[cat]) : ALL_SYMPTOMS_CATEGORIZED[activeCategory] || [];
+    return symptoms.filter(s => s.toLowerCase().includes(searchQuery.toLowerCase())).sort((a, b) => a.localeCompare(b));
+  }, [activeCategory, searchQuery]);
+
+  const isEmergency = predictionResult?.emergency_flag || selectedSymptoms.some(s => s.toLowerCase().includes('chest pain') || s.toLowerCase().includes('difficulty breathing'));
+
+  return (
+    <div className="max-w-7xl mx-auto flex flex-col p-4 sm:p-8 space-y-6">
+      
+      {/* HEADER */}
+      <div className="flex-shrink-0 animate-[fadeInUp_0.5s_ease-out_forwards]">
+        <h2 className="text-4xl font-extrabold text-blue-900 mb-2">AI Symptom Triage</h2>
+        <p className="text-gray-500 text-lg">Select symptoms to get an initial, non-diagnostic AI assessment before booking.</p>
+      </div>
+
+      {/* MAIN SELECTION AREA */}
+      <div className="flex-grow flex flex-col lg:flex-row gap-6 animate-[fadeInUp_0.6s_ease-out_forwards]">
+        
+        {/* Left: Search & Pick */}
+        <div className="lg:w-1/2 flex flex-col bg-white shadow-xl rounded-3xl border border-gray-100 p-6">
+          <div className="flex justify-between items-center mb-4 flex-shrink-0">
+             <h3 className="text-xl font-extrabold text-blue-900">Symptom Dictionary</h3>
+             <input type="text" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} placeholder="Search symptoms..." className="p-2 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 w-1/2 text-sm" />
+          </div>
+          
+          <div className="flex space-x-2 overflow-x-auto pb-3 border-b border-gray-200 flex-shrink-0 hide-scrollbar">
+            {SYMPTOM_CATEGORIES.map(cat => (
+              <button key={cat} onClick={() => { setActiveCategory(cat); setSearchQuery(''); }} className={`px-4 py-2 rounded-xl text-sm font-bold transition whitespace-nowrap ${ activeCategory === cat && !searchQuery ? 'bg-blue-600 text-white shadow-md transform -translate-y-0.5' : 'bg-gray-100 text-gray-600 hover:bg-gray-200' }`}>
+                {cat}
+              </button>
+            ))}
+          </div>
+
+          <div className="flex-grow overflow-y-auto pr-2 pt-4 grid grid-cols-2 gap-3 max-h-[40vh]">
+            {filteredSymptoms.map(symptom => {
+              const isSelected = selectedSymptoms.includes(symptom);
+              return (
+                <button key={symptom} onClick={() => setSelectedSymptoms(p=>p.includes(symptom)?p.filter(s=>s!==symptom):[...p, symptom])} className={`p-3 text-sm h-fit rounded-xl text-left shadow-sm transition-all duration-200 border ${isSelected ? 'bg-green-500 text-white font-bold border-green-600' : 'bg-gray-50 text-gray-700 hover:bg-blue-50 border-gray-200'}`}>
+                  {symptom}
+                </button>
+              );
+            })}
+            {filteredSymptoms.length === 0 && <p className="text-gray-500 italic col-span-2 text-center p-4">No symptoms found.</p>}
+          </div>
+        </div>
+
+        {/* Right: Selected & Action */}
+        <div className="lg:w-1/2 flex flex-col bg-white shadow-xl rounded-3xl border border-gray-100 p-6">
+          <h3 className="text-xl font-extrabold text-blue-900 mb-4 flex-shrink-0">Selected Symptoms ({selectedSymptoms.length})</h3>
+          <div className="flex-grow flex flex-wrap gap-2 min-h-[150px] bg-gray-50 border border-dashed border-gray-300 rounded-2xl p-4 mb-6">
+            {selectedSymptoms.length === 0 ? (
+              <p className="text-gray-400 font-medium m-auto text-center"><Icon name="stethoscope" size={40} className="mx-auto mb-2 opacity-50"/>Start selecting from the left...</p>
+            ) : (
+              selectedSymptoms.map(symptom => (
+                <div key={symptom} className="flex h-fit items-center bg-blue-100 text-blue-900 font-bold px-4 py-2 rounded-full border border-blue-200 shadow-sm transition transform hover:scale-105">
+                  {symptom}
+                  <button onClick={() => setSelectedSymptoms(p=>p.filter(s=>s!==symptom))} className="ml-2 text-blue-500 hover:text-red-500 transition"><Icon name="x" size={16} /></button>
+                </div>
+              ))
+            )}
+          </div>
+          
+          <div className="flex justify-end space-x-3 flex-shrink-0">
+            <button onClick={()=>setSelectedSymptoms([])} disabled={selectedSymptoms.length === 0 || isLoading} className="px-6 py-4 text-gray-700 font-bold bg-gray-100 hover:bg-gray-200 rounded-xl transition disabled:opacity-50">Clear</button>
+            <button onClick={handlePrediction} disabled={selectedSymptoms.length === 0 || isLoading || !authReady} className="flex-grow px-6 py-4 text-white font-extrabold bg-blue-600 hover:bg-blue-700 rounded-xl shadow-lg hover:shadow-xl transition transform hover:-translate-y-1 disabled:opacity-50 disabled:hover:translate-y-0 flex justify-center items-center">
+              {isLoading ? 'Analyzing Symptoms via Gemini...' : 'Analyze Symptoms'}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* RESULTS AREA */}
+      <div id="prediction-results" className="pt-4">
+        {isLoading && <div className="space-y-4"><SkeletonCard /><SkeletonCard /></div>}
+        
+        {isEmergency && !isLoading && (
+          <div className="bg-red-50 border-l-4 border-red-600 p-6 rounded-r-2xl mb-6 flex items-start text-red-900 shadow-sm animate-[fadeIn_0.3s_ease-out]">
+            <Icon name="alertTriangle" size={32} className="flex-shrink-0 mt-1" color="#dc2626" />
+            <div className="ml-4">
+              <h4 className="font-extrabold text-xl mb-1">EMERGENCY WARNING</h4>
+              <p className="font-medium text-red-800">Based on your symptoms, please seek professional emergency medical help immediately. Call your local emergency number.</p>
+            </div>
+          </div>
+        )}
+        
+        {predictionResult && !isLoading && !predictionResult.error && (
+          <div className="bg-white shadow-xl rounded-3xl border border-gray-100 p-6 sm:p-8 animate-[fadeInUp_0.5s_ease-out]">
+            <h3 className="text-2xl font-extrabold text-blue-900 mb-6 flex items-center border-b pb-4"><Icon name="checkCircle" size={28} className="mr-3 text-green-500" /> AI Diagnostic Assessment</h3>
+            <div className="space-y-6">
+              {predictionResult.predictions.map((p, index) => {
+                const conf = Math.round(p.confidence * 100);
+                const color = conf > 70 ? 'bg-green-500' : conf > 40 ? 'bg-yellow-500' : 'bg-red-400';
+                return (
+                  <div key={index} className="p-6 rounded-2xl bg-gray-50 border border-gray-200">
+                    <div className="flex justify-between items-center mb-3">
+                      <h4 className="font-extrabold text-xl text-gray-900">{p.disease}</h4>
+                      <span className="text-sm font-extrabold bg-white border px-3 py-1 rounded-lg text-gray-700 shadow-sm">{conf}% Match</span>
+                    </div>
+                    <div className="w-full bg-gray-200 rounded-full h-3 mb-4 overflow-hidden"><div className={`h-3 rounded-full ${color}`} style={{ width: `${conf}%` }}></div></div>
+                    <p className="text-gray-700 leading-relaxed font-medium">{p.description}</p>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {predictionResult?.error && !isLoading && (
+          <div className="p-6 bg-red-50 border border-red-200 rounded-2xl text-red-800"><p className="font-bold mb-1">System Error</p><p>{predictionResult.error}</p></div>
+        )}
+      </div>
+      
+      {/* HISTORY */}
+      <div className="bg-white shadow-xl rounded-3xl border border-gray-100 p-6 sm:p-8 mt-6">
+        <h3 className="text-xl font-extrabold text-blue-900 mb-6 flex items-center border-b pb-4"><Icon name="history" size={24} className="mr-3 text-blue-500" /> Recent AI Triage History</h3>
+        {history.length === 0 ? <p className="text-gray-500 italic">No previous checks found.</p> : (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {history.map(item => (
+              <div key={item.id} className="p-4 bg-gray-50 rounded-2xl border border-gray-200 shadow-sm">
+                <p className="text-xs font-bold text-gray-500 mb-2">{new Date(item.timestamp?.seconds * 1000).toLocaleString()}</p>
+                <p className="text-sm font-medium text-gray-800 mb-3 truncate" title={item.symptoms.join(', ')}>Symp: {item.symptoms.join(', ')}</p>
+                <div className="text-sm font-bold text-green-700 bg-green-50 p-2 rounded-lg border border-green-100">Top Match: {item.result.predictions[0]?.disease || 'N/A'}</div>
               </div>
             ))}
           </div>
@@ -772,183 +1567,8 @@ const AdminDashboard = ({ db, appId }) => {
   );
 };
 
-
 // =================================================================================
-// --- EXISTING PAGES (Adapted to RBAC & Flex Flow) ---
-// =================================================================================
-
-const HomePage = ({ onNavigate }) => (
-  <div className="h-full flex flex-col items-center justify-center relative bg-gradient-to-r from-blue-500 to-cyan-500 p-4 sm:p-8">
-    <div className="z-10 text-center text-white p-4 max-w-4xl">
-      <h1 className="text-4xl md:text-6xl font-extrabold mb-4 drop-shadow-lg tracking-tight animate-[fadeInUp_0.6s_ease-out_forwards]">Welcome to Vaidya Mithra HMIS</h1>
-      <p className="text-lg md:text-xl mb-8 font-light drop-shadow-md animate-[fadeInUp_0.8s_ease-out_forwards]">Comprehensive enterprise health management & AI insights.</p>
-      <a href="#" onClick={(e) => { e.preventDefault(); onNavigate('appointments'); }} className="inline-flex items-center px-8 py-3 bg-green-500 text-white text-lg font-semibold rounded-full shadow-xl hover:bg-green-600 transition transform hover:scale-105 animate-[fadeInUp_1s_ease-out_forwards]">
-        My Appointments <Icon name="chevronRight" size={24} className="ml-2" color="white" />
-      </a>
-    </div>
-  </div>
-);
-
-const HospitalPage = () => {
-  const [status, setStatus] = useState('ready');
-
-  const findHospitals = () => {
-    if (!navigator.geolocation) return setStatus('error');
-    setStatus('loading');
-    navigator.geolocation.getCurrentPosition(
-      (pos) => { setStatus('found'); window.open(`https://www.google.com/maps/search/?api=1&query=hospitals+near+$${pos.coords.latitude},${pos.coords.longitude}`, '_blank'); },
-      () => setStatus('error'),
-      { enableHighAccuracy: true, timeout: 5000, maximumAge: 0 }
-    );
-  };
-
-  return (
-    <div className="h-full flex items-center justify-center p-4">
-      <div className="bg-white/80 backdrop-blur-lg shadow-2xl rounded-2xl p-6 sm:p-8 border border-gray-200 max-w-2xl w-full">
-        <h2 className="text-3xl font-extrabold text-blue-800 mb-6 flex items-center"><Icon name="hospital" size={30} className="mr-3 text-blue-500" /> Nearby Facilities</h2>
-        <button onClick={findHospitals} disabled={status === 'loading'} className="w-full bg-green-500 hover:bg-green-600 text-white font-bold py-3 rounded-xl transition disabled:opacity-50 flex items-center justify-center">
-          {status === 'loading' ? 'Locating...' : 'Find Hospitals Now'}
-        </button>
-      </div>
-    </div>
-  );
-};
-
-const DocBotPage = ({ db, userId, authReady, appId }) => {
-  const [chatHistory, setChatHistory] = useState([]);
-  const [currentMessage, setCurrentMessage] = useState('');
-  const [isTyping, setIsTyping] = useState(false);
-  const messagesEndRef = useRef(null);
-
-  useEffect(() => {
-    if (!authReady || !userId || !db || !appId) return;
-    const q = query(collection(db, `artifacts/${appId}/users/${userId}/docbot_chat`), orderBy('timestamp', 'asc'), limit(50));
-    return onSnapshot(q, snap => setChatHistory(snap.docs.map(d => ({...d.data(), id: d.id }))));
-  }, [db, userId, authReady, appId]);
-
-  useEffect(() => messagesEndRef.current?.scrollIntoView({ behavior: "smooth" }), [chatHistory]);
-
-  const handleSend = async (messageText) => {
-    const message = (typeof messageText === 'string') ? messageText : currentMessage;
-    if (!message.trim() || isTyping || !db || !userId || !appId) return;
-    setCurrentMessage('');
-    setIsTyping(true);
-
-    const chatRef = collection(db, `artifacts/${appId}/users/${userId}/docbot_chat`);
-    await setDoc(doc(chatRef), { text: message.trim(), role: 'user', timestamp: serverTimestamp() });
-
-    try {
-      const apiHistory = chatHistory.map(msg => ({ role: msg.role === 'ai' ? 'model' : 'user', parts: [{ text: msg.text }] }));
-      apiHistory.push({ role: 'user', parts: [{ text: message.trim() }] });
-      const payload = { contents: apiHistory, systemInstruction: { parts: [{ text: "You are DocBot..." }] } };
-      const res = await fetch(GEMINI_API_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
-      const result = await res.json();
-      const aiText = result.candidates?.[0]?.content?.parts?.[0]?.text || "Error processing request.";
-      await setDoc(doc(chatRef), { text: aiText, role: 'ai', timestamp: serverTimestamp() });
-    } catch (e) {
-      await setDoc(doc(chatRef), { text: "Error connecting to AI.", role: 'ai_error', timestamp: serverTimestamp() });
-    } finally {
-      setIsTyping(false);
-    }
-  };
-
-  return (
-    <div className="h-full p-4 sm:p-8 flex flex-col">
-      <div className="bg-white/80 backdrop-blur-lg shadow-xl rounded-2xl p-4 sm:p-8 border border-gray-200 flex flex-col flex-grow h-full overflow-hidden">
-        <h2 className="text-3xl font-extrabold text-blue-800 mb-6 flex-shrink-0 flex items-center"><Icon name="messageSquare" size={30} className="mr-3 text-green-500" /> DocBot</h2>
-        <div className="flex-grow overflow-y-auto p-4 mb-4 bg-gray-50 rounded-lg border border-gray-200 flex flex-col space-y-3">
-          {chatHistory.length === 0 ? <p className="text-center text-gray-500 m-auto">Hello! Ask me any general health questions.</p> : chatHistory.map(msg => (
-            <div key={msg.id} className={`max-w-xs sm:max-w-md p-3 rounded-xl shadow-md ${msg.role === 'user' ? 'bg-blue-500 text-white self-end rounded-br-none' : 'bg-white text-gray-800 self-start rounded-tl-none border'}`}>{msg.text}</div>
-          ))}
-          {isTyping && <div className="self-start p-3 bg-gray-200 rounded-xl rounded-tl-none animate-pulse w-16 h-8" />}
-          <div ref={messagesEndRef} />
-        </div>
-        <div className="flex space-x-2 flex-shrink-0">
-          <input type="text" value={currentMessage} onChange={e=>setCurrentMessage(e.target.value)} onKeyDown={e=>e.key==='Enter'&&handleSend()} className="flex-grow p-3 border border-gray-300 rounded-xl" placeholder="Ask DocBot..." />
-          <button onClick={()=>handleSend()} className="bg-blue-600 text-white px-4 rounded-xl"><Icon name="send" size={20} /></button>
-        </div>
-      </div>
-    </div>
-  );
-};
-
-const ContactPage = () => (
-  <div className="h-full flex p-4 sm:p-6 items-center justify-center">
-    <div className="bg-white/90 backdrop-blur-lg shadow-xl rounded-2xl p-8 border border-gray-200 max-w-4xl w-full text-center">
-      <h2 className="text-3xl font-extrabold text-blue-800 mb-4 flex items-center justify-center"><Icon name="mail" size={30} className="mr-3 text-blue-500" /> HMIS Support</h2>
-      <p className="text-gray-600 mb-8">System developed & maintained by:</p>
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6 text-left">
-        <div className="bg-gray-50 border p-5 rounded-xl"><p className="font-bold text-lg text-blue-800 mb-2">Dilip Kumar A N</p><p className="text-sm">7259447817<br/>dilipkumaran.ec23@rvce.edu.in</p></div>
-        <div className="bg-gray-50 border p-5 rounded-xl"><p className="font-bold text-lg text-blue-800 mb-2">Arya B V</p><p className="text-sm">8050141198<br/>aryabv.ec23@rvce.edu.in</p></div>
-      </div>
-    </div>
-  </div>
-);
-
-const PredictionPage = ({ db, userId, authReady, appId }) => {
-  const [selectedSymptoms, setSelectedSymptoms] = useState([]);
-  const [predictionResult, setPredictionResult] = useState(null);
-  const [isLoading, setIsLoading] = useState(false);
-  const [activeCategory, setActiveCategory] = useState(SYMPTOM_CATEGORIES[0]);
-  const [searchQuery, setSearchQuery] = useState('');
-
-  const handlePrediction = async () => {
-    if (!selectedSymptoms.length) return;
-    setIsLoading(true); setPredictionResult(null);
-    try {
-      const prompt = `Symptoms: ${selectedSymptoms.join(', ')}. Return JSON format strictly.`;
-      const res = await fetch(GEMINI_API_URL, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { responseMimeType: "application/json", responseSchema: JSON_SCHEMA } })
-      });
-      const result = await res.json();
-      setPredictionResult(JSON.parse(result.candidates[0].content.parts[0].text));
-    } catch (e) {
-      setPredictionResult({ error: "Failed to fetch." });
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const filtered = (searchQuery ? SYMPTOM_CATEGORIES.flatMap(c=>ALL_SYMPTOMS_CATEGORIZED[c]) : ALL_SYMPTOMS_CATEGORIZED[activeCategory]).filter(s=>s.toLowerCase().includes(searchQuery.toLowerCase()));
-
-  return (
-    <div className="max-w-6xl mx-auto p-4 sm:p-8 flex flex-col space-y-6">
-      <h2 className="text-3xl font-extrabold text-blue-800">AI Triage Assessment</h2>
-      <div className="flex flex-col lg:flex-row gap-6">
-        <div className="lg:w-1/2 bg-white p-5 rounded-2xl shadow-sm border border-gray-200 flex flex-col max-h-[60vh]">
-           <div className="flex space-x-2 overflow-x-auto pb-2 border-b flex-shrink-0">
-             {SYMPTOM_CATEGORIES.map(c => <button key={c} onClick={()=>{setActiveCategory(c); setSearchQuery('');}} className={`px-4 py-1 rounded-full text-sm ${activeCategory===c ? 'bg-blue-600 text-white':'bg-gray-100'}`}>{c}</button>)}
-           </div>
-           <input placeholder="Search symptoms..." value={searchQuery} onChange={e=>setSearchQuery(e.target.value)} className="mt-3 p-2 border rounded-xl w-full flex-shrink-0" />
-           <div className="flex-grow overflow-y-auto mt-3 grid grid-cols-2 gap-2">
-             {filtered.map(s => <button key={s} onClick={()=>setSelectedSymptoms(p=>p.includes(s)?p.filter(x=>x!==s):[...p, s])} className={`p-2 text-sm rounded border text-left ${selectedSymptoms.includes(s)?'bg-green-500 text-white':'bg-gray-50'}`}>{s}</button>)}
-           </div>
-        </div>
-        <div className="lg:w-1/2 bg-white p-5 rounded-2xl shadow-sm border border-gray-200">
-          <h3 className="text-lg font-bold mb-3">Selected ({selectedSymptoms.length})</h3>
-          <div className="flex flex-wrap gap-2 mb-6">{selectedSymptoms.map(s => <span key={s} className="px-3 py-1 bg-blue-100 text-blue-800 rounded-full text-sm">{s}</span>)}</div>
-          <button onClick={handlePrediction} disabled={!selectedSymptoms.length || isLoading} className="w-full bg-blue-600 text-white font-bold py-3 rounded-xl disabled:opacity-50">{isLoading ? 'Analyzing...' : 'Get Prediction'}</button>
-          
-          {predictionResult && !predictionResult.error && (
-            <div className="mt-6 space-y-4">
-               {predictionResult.predictions.map((p,i) => (
-                 <div key={i} className="p-4 bg-green-50 border border-green-200 rounded-xl">
-                   <div className="flex justify-between font-bold text-green-900 mb-1"><span>{p.disease}</span><span>{Math.round(p.confidence*100)}%</span></div>
-                   <p className="text-sm text-gray-700">{p.description}</p>
-                 </div>
-               ))}
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-};
-
-
-// =================================================================================
-// --- MAIN APP COMPONENT ---
+// --- MAIN APP COMPONENT (STATE / ROUTER) ---
 // =================================================================================
 
 const App = () => {
@@ -961,20 +1581,40 @@ const App = () => {
   const [currentPage, setCurrentPage] = useState('home');
   const [unreadCount, setUnreadCount] = useState(0);
 
+  // 1. Initialize Firebase
   useEffect(() => {
     let isMounted = true;
     try {
-      const configStr = env.VITE_FIREBASE_CONFIG || '{}';
-      if (configStr === '{}') return;
-      const firebaseConfig = JSON.parse(configStr);
-      if (!firebaseConfig.apiKey || !firebaseConfig.appId) return;
+      // Prioritize Canvas variables, fallback to Vercel env
+      const configStr = (typeof __firebase_config !== 'undefined') 
+        ? __firebase_config 
+        : (env.VITE_FIREBASE_CONFIG || null);
+      
+      if (!configStr || configStr === '{}') {
+        console.warn("No Firebase configuration found. Waiting or defaulting.");
+        if (isMounted) setAuthReady(true); // Prevent freeze
+        return;
+      }
+      
+      const firebaseConfig = typeof configStr === 'string' ? JSON.parse(configStr) : configStr;
+      
+      if (!firebaseConfig.apiKey) {
+        console.warn("Invalid Firebase config. Missing apiKey.");
+        if (isMounted) setAuthReady(true); // Prevent freeze
+        return;
+      }
+
+      // AppId handling
+      const currentAppId = (typeof __app_id !== 'undefined') ? __app_id : firebaseConfig.appId;
 
       const app = initializeApp(firebaseConfig);
       const firestore = getFirestore(app);
       const firebaseAuth = getAuth(app);
       
       if (isMounted) {
-        setDb(firestore); setAuth(firebaseAuth); setAppId(firebaseConfig.appId);
+        setDb(firestore); 
+        setAuth(firebaseAuth); 
+        setAppId(currentAppId);
       }
 
       onAuthStateChanged(firebaseAuth, (authUser) => {
@@ -982,24 +1622,28 @@ const App = () => {
         if (authUser) {
           setUser(authUser);
         } else {
-          setUser(null); setUserProfile(null); setAuthReady(true);
+          setUser(null); 
+          setUserProfile(null); 
+          setAuthReady(true);
         }
       });
     } catch (e) {
       console.error("Firebase Init Failed:", e);
-      if (isMounted) setAuthReady(true);
+      if (isMounted) setAuthReady(true); // Prevent freeze on error
     }
     return () => { isMounted = false; };
   }, []);
 
-  // Listen to User Profile dynamically
+  // 2. Fetch User Profile & Apply RBAC Routing
   useEffect(() => {
     if (!user || !db || !appId) return;
-    const unsub = onSnapshot(doc(db, `artifacts/${appId}/all_users`, user.uid), (docSnap) => {
+    // Reading from public directory as master source of truth for Role/Status to prevent desync
+    const unsub = onSnapshot(doc(db, `artifacts/${appId}/public/data/all_users`, user.uid), (docSnap) => {
       if (docSnap.exists()) {
         const profileData = docSnap.data();
         setUserProfile(profileData);
-        // Set default routing based on role
+        
+        // Auto-redirect on initial load
         if (!userProfile) {
            if (profileData.role === 'admin') setCurrentPage('admin-dashboard');
            else if (profileData.role === 'doctor') setCurrentPage('doctor-dashboard');
@@ -1007,18 +1651,21 @@ const App = () => {
            else setCurrentPage('home');
         }
       }
-      setAuthReady(true);
+      setAuthReady(true); // Unlocks UI once profile is loaded
+    }, (error) => {
+      console.error("Failed to load user profile", error);
+      setAuthReady(true); // Unlock UI on error
     });
     return () => unsub();
-  }, [user, db, appId]);
+  }, [user, db, appId, userProfile]);
 
-  // Listen to Patient Notifications
+  // 3. Notification Count (Patients)
   useEffect(() => {
     if (!user || !db || !appId || userProfile?.role !== 'patient') return;
-    const q = query(collection(db, `artifacts/${appId}/appointments`));
+    const q = query(collection(db, `artifacts/${appId}/public/data/appointments`));
     const unsub = onSnapshot(q, (snap) => {
+      // Memory filter
       const count = snap.docs.map(d=>d.data()).filter(a => a.patientId === user.uid && (a.status === 'scheduled' || a.status === 'ready' || a.status === 'completed')).length;
-      // Basic implementation for notification ping
       setUnreadCount(count); 
     });
     return () => unsub();
@@ -1032,19 +1679,31 @@ const App = () => {
     }
   };
 
+  // UI STATE: Loading
   if (!authReady) {
-    return <div className="h-screen w-screen flex items-center justify-center bg-gray-50"><div className="animate-pulse flex flex-col items-center"><Icon name="stethoscope" size={48} className="text-blue-500 mb-4" /><p className="text-blue-900 font-bold">Initializing HMIS...</p></div></div>;
+    return (
+      <div className="h-screen w-screen flex items-center justify-center bg-gray-50 font-sans">
+        <div className="animate-pulse flex flex-col items-center">
+          <div className="w-24 h-24 bg-blue-100 rounded-full flex items-center justify-center mb-6">
+            <Icon name="stethoscope" size={48} className="text-blue-600" />
+          </div>
+          <p className="text-blue-900 font-extrabold text-xl tracking-wide">Initializing HMIS Engine...</p>
+        </div>
+      </div>
+    );
   }
 
-  // Route Logic Check
+  // UI STATE: Auth Guard
   if (!user) {
-    return <AuthPage onAuthSuccess={setUser} db={db} auth={auth} appId={appId} />;
+    return <AuthPage db={db} auth={auth} appId={appId} />;
   }
 
+  // UI STATE: Pending Staff Guard
   if (userProfile && userProfile.status === 'pending') {
     return <PendingStatePage onLogout={handleLogout} />;
   }
 
+  // ROUTING RENDERER
   const renderPage = () => {
     const pageProps = { db, auth, userId: user.uid, appId, authReady, userProfile };
     
@@ -1068,15 +1727,41 @@ const App = () => {
     }
   };
 
+  // MAIN LAYOUT
   return (
     <div className="flex flex-col h-screen w-screen bg-gray-50 font-sans overflow-hidden">
       <style>{`
-        @keyframes fadeInUp { from { opacity: 0; transform: translateY(20px); } to { transform: translateY(0); opacity: 1; } }
+        /* Global Custom Tailwind Extensions */
+        @keyframes fadeInUp { 
+          from { opacity: 0; transform: translateY(20px); } 
+          to { transform: translateY(0); opacity: 1; } 
+        }
+        @keyframes fadeIn {
+          from { opacity: 0; }
+          to { opacity: 1; }
+        }
+        .hide-scrollbar::-webkit-scrollbar {
+          display: none;
+        }
+        .hide-scrollbar {
+          -ms-overflow-style: none;
+          scrollbar-width: none;
+        }
       `}</style>
-      <NavBar currentPage={currentPage} onNavigate={setCurrentPage} userProfile={userProfile} onLogout={handleLogout} unreadCount={unreadCount} />
+      
+      <NavBar 
+        currentPage={currentPage} 
+        onNavigate={setCurrentPage} 
+        userProfile={userProfile} 
+        onLogout={handleLogout} 
+        unreadCount={unreadCount} 
+      />
+      
+      {/* Strict Flex structure: only main scrolls */}
       <main className="flex-grow overflow-y-auto relative">
         {renderPage()}
       </main>
+      
       <Footer />
     </div>
   );
