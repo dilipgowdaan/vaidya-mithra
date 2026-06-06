@@ -22,9 +22,8 @@ import {
   updateDoc,
 } from "firebase/firestore";
 
-const env = typeof import.meta !== "undefined" && import.meta.env 
-  ? import.meta.env 
-  : (typeof process !== "undefined" && process.env ? process.env : {});
+const env =
+  typeof import.meta !== "undefined" && import.meta.env ? import.meta.env : {};
 
 const SUPER_ADMIN_EMAIL = "admin@gmail.com";
 const SUPER_ADMIN_PASSWORD = "Admin@123";
@@ -351,7 +350,12 @@ const appointmentEvent = (status, actor, label) => ({
 });
 
 const callGemini = async ({ prompt, schema }) => {
-  const apiKey = env.VITE_VAIDYA_MITHRA_GEMINI_KEY || env.VITE_GEMINI_API_KEY || "";
+  const apiKey = env.VITE_VAIDYA_MITHRA_GEMINI_KEY || env.VITE_GEMINI_API_KEY;
+  if (!apiKey) {
+    throw new Error(
+      "Gemini API key is missing. Set VITE_VAIDYA_MITHRA_GEMINI_KEY in your environment."
+    );
+  }
 
   const response = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${apiKey}`,
@@ -431,7 +435,7 @@ const useLiveCollection = (db, pathSegments, enabled = true) => {
 
 const Icon = ({ name, size = 20, className = "" }) => {
   const props = {
-    xmlns: "[http://www.w3.org/2000/svg](http://www.w3.org/2000/svg)",
+    xmlns: "http://www.w3.org/2000/svg",
     width: size,
     height: size,
     viewBox: "0 0 24 24",
@@ -1204,7 +1208,7 @@ Rules:
           ? parsed.predictions.slice(0, 3).map((item) => ({
               disease: String(item.disease || "Possible condition"),
               confidence: Number(item.confidence || 0),
-              description: String(item.description || "Consult a clinician."),
+              description: String(item.description || "Consult a qualified clinician."),
             }))
           : [],
       };
@@ -1663,7 +1667,7 @@ const AttenderDashboard = ({ db, appId, profile }) => {
     ["artifacts", appId, "appointments"],
     Boolean(db && appId)
   );
-  const { items: users } = useLiveCollection(
+  const { items: users, error: usersError } = useLiveCollection(
     db,
     ["artifacts", appId, "all_users"],
     Boolean(db && appId)
@@ -1671,11 +1675,9 @@ const AttenderDashboard = ({ db, appId, profile }) => {
   const [scheduleForms, setScheduleForms] = useState({});
   const [vitalForms, setVitalForms] = useState({});
   const [busyId, setBusyId] = useState("");
-  
-  const allDoctors = users
-    .filter((user) => user.role === "doctor")
+  const approvedDoctors = users
+    .filter((user) => user.role === "doctor" && user.status === "approved")
     .sort((a, b) => String(a.name).localeCompare(String(b.name)));
-    
   const requested = sortNewest(appointments.filter((item) => item.status === "requested"));
   const scheduled = sortNewest(appointments.filter((item) => item.status === "scheduled"));
 
@@ -1693,8 +1695,8 @@ const AttenderDashboard = ({ db, appId, profile }) => {
 
   const scheduleAppointment = async (appointment) => {
     const form = scheduleForms[appointment.id] || {};
-    const doctor = allDoctors.find((item) => item.uid === form.doctorId || item.id === form.doctorId);
-    if (!form.date || !form.time || !doctor || doctor.status !== "approved") return;
+    const doctor = approvedDoctors.find((item) => item.uid === form.doctorId);
+    if (!form.date || !form.time || !doctor) return;
 
     setBusyId(appointment.id);
     try {
@@ -1702,7 +1704,7 @@ const AttenderDashboard = ({ db, appId, profile }) => {
         status: "scheduled",
         scheduledDate: form.date,
         scheduledTime: form.time,
-        doctorId: doctor.uid || doctor.id,
+        doctorId: doctor.uid,
         doctorName: doctor.name,
         doctorEmail: doctor.email,
         scheduledBy: profile.uid,
@@ -1763,6 +1765,17 @@ const AttenderDashboard = ({ db, appId, profile }) => {
       <div className="grid gap-6 xl:grid-cols-2">
         <Card>
           <h2 className="text-lg font-bold text-gray-950">Requested Appointments</h2>
+          {usersError ? (
+            <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+              Doctor list is blocked by Firestore rules. Deploy the updated
+              firestore.rules file so approved attenders can read the staff directory.
+            </div>
+          ) : approvedDoctors.length === 0 ? (
+            <div className="mt-3 rounded-lg border border-blue-200 bg-blue-50 p-3 text-sm text-blue-800">
+              No approved doctors are visible yet. Create a doctor account and approve
+              it from the Admin Approvals page.
+            </div>
+          ) : null}
           <div className="mt-4 space-y-4">
             {requested.length === 0 ? (
               <EmptyState title="No requested appointments" />
@@ -1796,20 +1809,11 @@ const AttenderDashboard = ({ db, appId, profile }) => {
                         }
                       >
                         <option value="">Select doctor</option>
-                        {allDoctors.map((doctor) => {
-                          const isApproved = doctor.status === "approved";
-                          const key = doctor.id || doctor.uid;
-                          return (
-                            <option 
-                              key={key} 
-                              value={key} 
-                              disabled={!isApproved}
-                              className={!isApproved ? "text-gray-400" : ""}
-                            >
-                              {doctor.name} {!isApproved ? "(Pending Approval)" : ""}
-                            </option>
-                          );
-                        })}
+                        {approvedDoctors.map((doctor) => (
+                          <option key={doctor.uid} value={doctor.uid}>
+                            {doctor.name}
+                          </option>
+                        ))}
                       </Select>
                     </div>
                     <Button
@@ -2740,13 +2744,7 @@ const App = () => {
 
   useEffect(() => {
     try {
-      let firebaseConfig = {};
-      if (typeof __firebase_config !== "undefined") {
-        firebaseConfig = JSON.parse(__firebase_config);
-      } else {
-        firebaseConfig = getFirebaseConfig();
-      }
-
+      const firebaseConfig = getFirebaseConfig();
       if (!firebaseConfig.apiKey || !firebaseConfig.projectId) {
         throw new Error(
           "Firebase config is missing. Set VITE_FIREBASE_CONFIG or individual VITE_FIREBASE_* variables."
@@ -2757,7 +2755,7 @@ const App = () => {
       setLogLevel(env.VITE_FIREBASE_LOG_LEVEL || "error");
       setDb(getFirestore(app));
       setAuth(getAuth(app));
-      setAppId(typeof __app_id !== "undefined" ? __app_id : (firebaseConfig.appId || env.VITE_APP_ID || firebaseConfig.projectId));
+      setAppId(firebaseConfig.appId || env.VITE_APP_ID || firebaseConfig.projectId);
     } catch (error) {
       setFirebaseError(error.message || "Firebase initialization failed.");
     } finally {
