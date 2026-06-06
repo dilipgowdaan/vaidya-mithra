@@ -141,7 +141,18 @@ const JSON_SCHEMA = {
 
 const GEMINI_MODEL =
   env.VITE_VAIDYA_MITHRA_GEMINI_MODEL ||
-  "gemini-2.5-flash-preview-09-2025";
+  "gemini-2.5-flash";
+
+const GEMINI_MODEL_CANDIDATES = [
+  ...String(env.VITE_VAIDYA_MITHRA_GEMINI_MODELS || "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean),
+  GEMINI_MODEL,
+  "gemini-2.5-flash",
+  "gemini-2.0-flash",
+  "gemini-1.5-flash",
+].filter((model, index, list) => model && list.indexOf(model) === index);
 
 const getFirebaseConfig = () => {
   if (env.VITE_FIREBASE_CONFIG) {
@@ -357,37 +368,53 @@ const callGemini = async ({ prompt, schema }) => {
     );
   }
 
-  const response = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${apiKey}`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        contents: [{ role: "user", parts: [{ text: prompt }] }],
-        generationConfig: schema
-          ? {
-              responseMimeType: "application/json",
-              responseSchema: schema,
-              temperature: 0.2,
-            }
-          : {
-              temperature: 0.4,
-              maxOutputTokens: 700,
-            },
-      }),
-    }
-  );
+  let lastError = "";
+  for (const model of GEMINI_MODEL_CANDIDATES) {
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contents: [{ role: "user", parts: [{ text: prompt }] }],
+          generationConfig: schema
+            ? {
+                responseMimeType: "application/json",
+                responseSchema: schema,
+                temperature: 0.2,
+              }
+            : {
+                temperature: 0.4,
+                maxOutputTokens: 700,
+              },
+        }),
+      }
+    );
 
-  const data = await response.json();
-  if (!response.ok) {
-    throw new Error(data?.error?.message || "Gemini request failed.");
+    const data = await response.json();
+    if (response.ok) {
+      return (
+        data?.candidates?.[0]?.content?.parts
+          ?.map((part) => part.text || "")
+          .join("\n")
+          .trim() || ""
+      );
+    }
+
+    lastError = data?.error?.message || "Gemini request failed.";
+    const retryWithNextModel =
+      response.status === 404 ||
+      response.status === 400 ||
+      lastError.toLowerCase().includes("not found") ||
+      lastError.toLowerCase().includes("not supported");
+
+    if (!retryWithNextModel) {
+      throw new Error(lastError);
+    }
   }
 
-  return (
-    data?.candidates?.[0]?.content?.parts
-      ?.map((part) => part.text || "")
-      .join("\n")
-      .trim() || ""
+  throw new Error(
+    `${lastError} Set VITE_VAIDYA_MITHRA_GEMINI_MODEL to a model returned by the Gemini models.list endpoint.`
   );
 };
 
@@ -575,6 +602,24 @@ const Icon = ({ name, size = 20, className = "" }) => {
         <path d="M12 18h.01" />
       </svg>
     ),
+    moon: (
+      <svg {...props}>
+        <path d="M12 3a6 6 0 0 0 9 7.2A9 9 0 1 1 12 3z" />
+      </svg>
+    ),
+    sun: (
+      <svg {...props}>
+        <circle cx="12" cy="12" r="4" />
+        <path d="M12 2v2" />
+        <path d="M12 20v2" />
+        <path d="m4.93 4.93 1.41 1.41" />
+        <path d="m17.66 17.66 1.41 1.41" />
+        <path d="M2 12h2" />
+        <path d="M20 12h2" />
+        <path d="m6.34 17.66-1.41 1.41" />
+        <path d="m19.07 4.93-1.41 1.41" />
+      </svg>
+    ),
   };
 
   return icons[name] || icons.activity;
@@ -724,6 +769,118 @@ const StatCard = ({ label, value, icon, tone = "blue" }) => {
   );
 };
 
+const ThemeToggle = ({ darkMode, onToggle }) => (
+  <Button
+    type="button"
+    size="icon"
+    variant="ghost"
+    onClick={onToggle}
+    title={darkMode ? "Switch to light mode" : "Switch to dark mode"}
+  >
+    <Icon name={darkMode ? "sun" : "moon"} size={20} />
+  </Button>
+);
+
+const THEME_CSS = `
+  .dark {
+    color-scheme: dark;
+    background-color: #0f172a;
+  }
+  .dark nav,
+  .dark footer,
+  .dark .bg-white,
+  .dark .bg-white\\/95,
+  .dark .bg-white\\/80,
+  .dark .bg-white\\/70 {
+    background-color: rgba(15, 23, 42, 0.96) !important;
+  }
+  .dark main,
+  .dark .bg-gray-50,
+  .dark .bg-blue-50,
+  .dark .bg-green-50,
+  .dark .bg-amber-50,
+  .dark .bg-purple-50,
+  .dark .bg-red-50 {
+    background-color: #111827 !important;
+  }
+  .dark .bg-gray-100 {
+    background-color: #1f2937 !important;
+  }
+  .dark .bg-gray-200 {
+    background-color: #374151 !important;
+  }
+  .dark .text-gray-950,
+  .dark .text-gray-900,
+  .dark .text-gray-800,
+  .dark .text-gray-700 {
+    color: #f8fafc !important;
+  }
+  .dark .text-gray-600,
+  .dark .text-gray-500,
+  .dark .text-gray-400 {
+    color: #cbd5e1 !important;
+  }
+  .dark .text-blue-950,
+  .dark .text-blue-900,
+  .dark .text-blue-800,
+  .dark .text-blue-700,
+  .dark .text-blue-600 {
+    color: #93c5fd !important;
+  }
+  .dark .text-green-900,
+  .dark .text-green-800,
+  .dark .text-green-700,
+  .dark .text-green-600 {
+    color: #86efac !important;
+  }
+  .dark .text-amber-900,
+  .dark .text-amber-800,
+  .dark .text-amber-700 {
+    color: #fde68a !important;
+  }
+  .dark .text-red-900,
+  .dark .text-red-800,
+  .dark .text-red-700 {
+    color: #fca5a5 !important;
+  }
+  .dark .border-gray-100,
+  .dark .border-gray-200,
+  .dark .border-gray-300,
+  .dark .divide-gray-100 > :not([hidden]) ~ :not([hidden]),
+  .dark .divide-gray-200 > :not([hidden]) ~ :not([hidden]) {
+    border-color: #334155 !important;
+  }
+  .dark input,
+  .dark select,
+  .dark textarea {
+    background-color: #0f172a !important;
+    border-color: #475569 !important;
+    color: #f8fafc !important;
+  }
+  .dark input::placeholder,
+  .dark textarea::placeholder {
+    color: #94a3b8 !important;
+  }
+  .dark table thead,
+  .dark .shadow-xl,
+  .dark .shadow-lg,
+  .dark .shadow-sm {
+    background-color: #111827 !important;
+  }
+  .dark .bg-blue-100,
+  .dark .bg-amber-100,
+  .dark .bg-green-100,
+  .dark .bg-purple-100,
+  .dark .bg-red-100 {
+    background-color: #1e293b !important;
+  }
+  .dark .hover\\:bg-gray-100:hover,
+  .dark .hover\\:bg-gray-50:hover,
+  .dark .hover\\:bg-blue-50:hover {
+    background-color: #1e293b !important;
+  }
+`;
+
 const NavBar = ({
   profile,
   currentPage,
@@ -731,6 +888,8 @@ const NavBar = ({
   onLogout,
   notifications,
   onMarkNotificationsRead,
+  darkMode,
+  onToggleDarkMode,
 }) => {
   const [menuOpen, setMenuOpen] = useState(false);
   const [notificationOpen, setNotificationOpen] = useState(false);
@@ -835,6 +994,8 @@ const NavBar = ({
             <p className="text-sm font-bold text-gray-900">{profile.name}</p>
             <p className="text-xs text-gray-500">{ROLE_LABELS[profile.role]}</p>
           </div>
+
+          <ThemeToggle darkMode={darkMode} onToggle={onToggleDarkMode} />
 
           <Button type="button" size="icon" variant="ghost" onClick={onLogout} title="Sign out">
             <Icon name="logOut" size={20} />
@@ -1110,12 +1271,14 @@ const PatientHomePage = ({ profile, onNavigate }) => (
     subtitle="Your patient workspace for AI guidance, consult requests, appointment updates, and hospital contacts."
   >
     <div className="grid gap-4 lg:grid-cols-3">
-      <Card className="bg-blue-700 text-white lg:col-span-2">
-        <p className="text-sm font-semibold uppercase tracking-wide text-blue-100">
+      <Card className="border-blue-200 bg-blue-50 lg:col-span-2">
+        <p className="text-sm font-semibold uppercase tracking-wide text-blue-800">
           Patient care hub
         </p>
-        <h2 className="mt-3 text-3xl font-bold">Start with symptoms or request a consult.</h2>
-        <p className="mt-3 max-w-2xl text-sm leading-6 text-blue-50">
+        <h2 className="mt-3 text-3xl font-bold text-gray-950">
+          Start with symptoms or request a consult.
+        </h2>
+        <p className="mt-3 max-w-2xl text-sm leading-6 text-blue-900">
           AI triage gives non-diagnostic next steps. Appointments connect your
           reason for visit with attender scheduling and doctor consultation notes.
         </p>
@@ -1640,7 +1803,21 @@ const HospitalsPage = () => {
   ];
 
   return (
-    <Page title="Hospitals" subtitle="Quick hospital contacts for patient-side support.">
+    <Page
+      title="Hospitals"
+      subtitle="Quick hospital contacts for patient-side support."
+      actions={
+        <a
+          href="https://www.google.com/maps/search/?api=1&query=hospitals%20near%20me"
+          target="_blank"
+          rel="noreferrer"
+          className="inline-flex items-center justify-center gap-2 rounded-lg bg-blue-700 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-800 focus:ring-4 focus:ring-blue-300"
+        >
+          <Icon name="hospital" size={17} />
+          Find nearby hospitals
+        </a>
+      }
+    >
       <div className="grid gap-4 md:grid-cols-3">
         {hospitals.map((hospital) => (
           <Card key={hospital.name}>
@@ -2506,27 +2683,36 @@ const ProfilePage = ({ auth, db, appId, profile }) => {
 
 const SupportPage = () => (
   <Page title="Support" subtitle="Contact information for every role in the HMIS.">
-    <div className="grid gap-4 md:grid-cols-3">
+    <div className="grid gap-4 md:grid-cols-2">
       <Card>
-        <Icon name="mail" className="text-blue-700" />
-        <h2 className="mt-4 text-lg font-bold text-gray-950">Email</h2>
-        <p className="mt-2 text-sm text-gray-600">support@vaidyamithra.example</p>
+        <Icon name="user" className="text-blue-700" />
+        <h2 className="mt-4 text-lg font-bold text-gray-950">Dilip Gowda</h2>
+        <p className="mt-2 flex items-center gap-2 text-sm text-gray-600">
+          <Icon name="mail" size={16} />
+          dilipgowda7259@gmail.com
+        </p>
+        <p className="mt-2 flex items-center gap-2 text-sm text-gray-600">
+          <Icon name="phone" size={16} />
+          7259447817
+        </p>
       </Card>
       <Card>
-        <Icon name="phone" className="text-green-700" />
-        <h2 className="mt-4 text-lg font-bold text-gray-950">Phone</h2>
-        <p className="mt-2 text-sm text-gray-600">+91 080 5555 0101</p>
-      </Card>
-      <Card>
-        <Icon name="hospital" className="text-purple-700" />
-        <h2 className="mt-4 text-lg font-bold text-gray-950">Hospital Desk</h2>
-        <p className="mt-2 text-sm text-gray-600">Open daily, 8:00 AM to 8:00 PM</p>
+        <Icon name="user" className="text-green-700" />
+        <h2 className="mt-4 text-lg font-bold text-gray-950">Arya B V</h2>
+        <p className="mt-2 flex items-center gap-2 text-sm text-gray-600">
+          <Icon name="mail" size={16} />
+          aryabvarya@gmail.com
+        </p>
+        <p className="mt-2 flex items-center gap-2 text-sm text-gray-600">
+          <Icon name="phone" size={16} />
+          8050141198
+        </p>
       </Card>
     </div>
   </Page>
 );
 
-const PendingNavBar = ({ currentPage, onNavigate, onLogout }) => {
+const PendingNavBar = ({ currentPage, onNavigate, onLogout, darkMode, onToggleDarkMode }) => {
   const links = [
     { id: "pending", label: "Wait", icon: "history" },
     { id: "profile", label: "Profile", icon: "user" },
@@ -2553,6 +2739,7 @@ const PendingNavBar = ({ currentPage, onNavigate, onLogout }) => {
               <span className="hidden sm:inline">{link.label}</span>
             </button>
           ))}
+          <ThemeToggle darkMode={darkMode} onToggle={onToggleDarkMode} />
           <Button type="button" size="icon" variant="ghost" onClick={onLogout} title="Sign out">
             <Icon name="logOut" size={20} />
           </Button>
@@ -2562,7 +2749,17 @@ const PendingNavBar = ({ currentPage, onNavigate, onLogout }) => {
   );
 };
 
-const PendingLayout = ({ auth, db, appId, profile, currentPage, onNavigate, onLogout }) => {
+const PendingLayout = ({
+  auth,
+  db,
+  appId,
+  profile,
+  currentPage,
+  onNavigate,
+  onLogout,
+  darkMode,
+  onToggleDarkMode,
+}) => {
   const pageToRender =
     currentPage === "profile" ? (
       <ProfilePage auth={auth} db={db} appId={appId} profile={profile} />
@@ -2573,8 +2770,15 @@ const PendingLayout = ({ auth, db, appId, profile, currentPage, onNavigate, onLo
     );
 
   return (
-    <div className="flex h-screen w-screen flex-col overflow-hidden bg-gradient-to-br from-blue-50 via-white to-amber-50 font-sans text-gray-900">
-      <PendingNavBar currentPage={currentPage} onNavigate={onNavigate} onLogout={onLogout} />
+    <div className={`${darkMode ? "dark" : ""} flex h-screen w-screen flex-col overflow-hidden bg-gradient-to-br from-blue-50 via-white to-amber-50 font-sans text-gray-900`}>
+      <style>{THEME_CSS}</style>
+      <PendingNavBar
+        currentPage={currentPage}
+        onNavigate={onNavigate}
+        onLogout={onLogout}
+        darkMode={darkMode}
+        onToggleDarkMode={onToggleDarkMode}
+      />
       <main className="min-h-0 flex-grow overflow-y-auto">{pageToRender}</main>
       <Footer />
     </div>
@@ -2741,6 +2945,16 @@ const App = () => {
   const [profileReady, setProfileReady] = useState(false);
   const [profileError, setProfileError] = useState("");
   const [page, setPage] = useState("patientHome");
+  const [darkMode, setDarkMode] = useState(() => {
+    if (typeof window === "undefined") return false;
+    try {
+      const saved = window.localStorage.getItem("vaidya-mithra-theme");
+      if (saved) return saved === "dark";
+      return window.matchMedia?.("(prefers-color-scheme: dark)")?.matches || false;
+    } catch (error) {
+      return false;
+    }
+  });
 
   useEffect(() => {
     try {
@@ -2762,6 +2976,17 @@ const App = () => {
       setFirebaseReady(true);
     }
   }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      window.localStorage.setItem("vaidya-mithra-theme", darkMode ? "dark" : "light");
+    } catch (error) {
+      console.warn("Theme preference could not be saved.", error);
+    }
+  }, [darkMode]);
+
+  const toggleDarkMode = () => setDarkMode((value) => !value);
 
   useEffect(() => {
     if (!auth) return undefined;
@@ -3035,17 +3260,20 @@ const App = () => {
         currentPage={page}
         onNavigate={setPage}
         onLogout={handleLogout}
+        darkMode={darkMode}
+        onToggleDarkMode={toggleDarkMode}
       />
     );
   }
 
   return (
-    <div className="flex h-screen w-screen flex-col overflow-hidden bg-gray-50 font-sans text-gray-900">
+    <div className={`${darkMode ? "dark" : ""} flex h-screen w-screen flex-col overflow-hidden bg-gray-50 font-sans text-gray-900`}>
       <style>{`
         @keyframes fadeInUp {
           from { opacity: 0; transform: translateY(12px); }
           to { opacity: 1; transform: translateY(0); }
         }
+        ${THEME_CSS}
       `}</style>
       <NavBar
         profile={profile}
@@ -3054,6 +3282,8 @@ const App = () => {
         onLogout={handleLogout}
         notifications={notifications}
         onMarkNotificationsRead={markNotificationsRead}
+        darkMode={darkMode}
+        onToggleDarkMode={toggleDarkMode}
       />
       <main className="min-h-0 flex-grow overflow-y-auto">
         <div style={{ animation: "fadeInUp 0.2s ease-out" }}>{renderPage()}</div>
