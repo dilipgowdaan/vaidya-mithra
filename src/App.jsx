@@ -22,10 +22,9 @@ import {
   updateDoc,
 } from "firebase/firestore";
 
-// Safe dynamic lookup to support both modern Vite configurations and older ES2015 target environments
-const env = typeof dynamicImportMeta !== "undefined" 
-  ? dynamicImportMeta 
-  : (typeof import.meta !== "undefined" && import.meta.env ? import.meta.env : (typeof process !== "undefined" && process.env ? process.env : {}));
+const env = typeof import.meta !== "undefined" && import.meta.env 
+  ? import.meta.env 
+  : (typeof process !== "undefined" && process.env ? process.env : {});
 
 const SUPER_ADMIN_EMAIL = "admin@gmail.com";
 const SUPER_ADMIN_PASSWORD = "Admin@123";
@@ -173,12 +172,11 @@ const isSuperAdminCredentials = (email, password) =>
 const userProfileRef = (db, appId, userId) =>
   doc(db, "artifacts", appId, "users", userId, "profile", "data");
 
-// Strict path compliance for public data to prevent silent permission failures
 const allUserRef = (db, appId, userId) =>
-  doc(db, "artifacts", appId, "public", "data", "all_users", userId);
+  doc(db, "artifacts", appId, "all_users", userId);
 
 const appointmentsCol = (db, appId) =>
-  collection(db, "artifacts", appId, "public", "data", "appointments");
+  collection(db, "artifacts", appId, "appointments");
 
 const notificationsCol = (db, appId, userId) =>
   collection(db, "artifacts", appId, "users", userId, "notifications");
@@ -1489,7 +1487,7 @@ const PatientAppointmentsPage = ({ db, appId, profile }) => {
   const [error, setError] = useState("");
   const { items: appointments } = useLiveCollection(
     db,
-    ["artifacts", appId, "public", "data", "appointments"],
+    ["artifacts", appId, "appointments"],
     Boolean(db && appId)
   );
   const patientAppointments = useMemo(
@@ -1662,12 +1660,12 @@ const HospitalsPage = () => {
 const AttenderDashboard = ({ db, appId, profile }) => {
   const { items: appointments } = useLiveCollection(
     db,
-    ["artifacts", appId, "public", "data", "appointments"],
+    ["artifacts", appId, "appointments"],
     Boolean(db && appId)
   );
   const { items: users } = useLiveCollection(
     db,
-    ["artifacts", appId, "public", "data", "all_users"],
+    ["artifacts", appId, "all_users"],
     Boolean(db && appId)
   );
   const [scheduleForms, setScheduleForms] = useState({});
@@ -1700,7 +1698,7 @@ const AttenderDashboard = ({ db, appId, profile }) => {
 
     setBusyId(appointment.id);
     try {
-      await updateDoc(doc(db, "artifacts", appId, "public", "data", "appointments", appointment.id), {
+      await updateDoc(doc(db, "artifacts", appId, "appointments", appointment.id), {
         status: "scheduled",
         scheduledDate: form.date,
         scheduledTime: form.time,
@@ -1731,7 +1729,7 @@ const AttenderDashboard = ({ db, appId, profile }) => {
 
     setBusyId(appointment.id);
     try {
-      await updateDoc(doc(db, "artifacts", appId, "public", "data", "appointments", appointment.id), {
+      await updateDoc(doc(db, "artifacts", appId, "appointments", appointment.id), {
         status: "ready",
         vitals: {
           bloodPressure: form.bloodPressure,
@@ -1806,7 +1804,7 @@ const AttenderDashboard = ({ db, appId, profile }) => {
                               key={key} 
                               value={key} 
                               disabled={!isApproved}
-                              style={{ color: !isApproved ? "#9ca3af" : "inherit" }}
+                              className={!isApproved ? "text-gray-400" : ""}
                             >
                               {doctor.name} {!isApproved ? "(Pending Approval)" : ""}
                             </option>
@@ -1896,7 +1894,7 @@ const AttenderDashboard = ({ db, appId, profile }) => {
 const DoctorDashboard = ({ db, appId, profile }) => {
   const { items: appointments } = useLiveCollection(
     db,
-    ["artifacts", appId, "public", "data", "appointments"],
+    ["artifacts", appId, "appointments"],
     Boolean(db && appId)
   );
   const [activeId, setActiveId] = useState("");
@@ -1916,7 +1914,7 @@ const DoctorDashboard = ({ db, appId, profile }) => {
     if (!activeAppointment || !notes.trim()) return;
     setBusy(true);
     try {
-      await updateDoc(doc(db, "artifacts", appId, "public", "data", "appointments", activeAppointment.id), {
+      await updateDoc(doc(db, "artifacts", appId, "appointments", activeAppointment.id), {
         status: "completed",
         clinicalNotes: notes.trim(),
         completedAt: serverTimestamp(),
@@ -2029,7 +2027,7 @@ const DoctorDashboard = ({ db, appId, profile }) => {
 const DoctorHistory = ({ db, appId, profile }) => {
   const { items: appointments } = useLiveCollection(
     db,
-    ["artifacts", appId, "public", "data", "appointments"],
+    ["artifacts", appId, "appointments"],
     Boolean(db && appId)
   );
   const completed = sortNewest(
@@ -2074,12 +2072,12 @@ const DoctorHistory = ({ db, appId, profile }) => {
 const AdminDashboard = ({ db, appId }) => {
   const { items: users } = useLiveCollection(
     db,
-    ["artifacts", appId, "public", "data", "all_users"],
+    ["artifacts", appId, "all_users"],
     Boolean(db && appId)
   );
   const { items: appointments } = useLiveCollection(
     db,
-    ["artifacts", appId, "public", "data", "appointments"],
+    ["artifacts", appId, "appointments"],
     Boolean(db && appId)
   );
 
@@ -2144,7 +2142,7 @@ const AdminDashboard = ({ db, appId }) => {
 const AdminApprovals = ({ db, appId, profile }) => {
   const { items: users } = useLiveCollection(
     db,
-    ["artifacts", appId, "public", "data", "all_users"],
+    ["artifacts", appId, "all_users"],
     Boolean(db && appId)
   );
   const [busyId, setBusyId] = useState("");
@@ -2226,7 +2224,7 @@ const AdminUsersDirectory = ({ db, appId }) => {
   const [roleFilter, setRoleFilter] = useState("all");
   const { items: users } = useLiveCollection(
     db,
-    ["artifacts", appId, "public", "data", "all_users"],
+    ["artifacts", appId, "all_users"],
     Boolean(db && appId)
   );
   const filteredUsers = users
@@ -2286,7 +2284,7 @@ const AdminUsersDirectory = ({ db, appId }) => {
 const AdminSystemLog = ({ db, appId }) => {
   const { items: appointments } = useLiveCollection(
     db,
-    ["artifacts", appId, "public", "data", "appointments"],
+    ["artifacts", appId, "appointments"],
     Boolean(db && appId)
   );
   const ordered = sortNewest(appointments);
