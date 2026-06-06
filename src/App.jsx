@@ -542,7 +542,6 @@ const sendScheduledAppointmentSms = async (patientPhone, scheduleMessage) => {
       `https://2factor.in/API/V1/${apiKey}/ADDON_SERVICES/SEND/TSMS`,
       {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           From: senderId,
           To: to,
@@ -2338,6 +2337,7 @@ const AttenderDashboard = ({ db, appId, profile }) => {
   const [queueSearch, setQueueSearch] = useState("");
   const [queueDate, setQueueDate] = useState("");
   const [busyId, setBusyId] = useState("");
+  const [smsNotice, setSmsNotice] = useState(null);
   const approvedDoctors = users
     .filter((user) => user.role === "doctor" && user.status === "approved")
     .sort((a, b) => String(a.name).localeCompare(String(b.name)));
@@ -2377,6 +2377,7 @@ const AttenderDashboard = ({ db, appId, profile }) => {
     if (!form.date || !form.time || !doctor || !availableSlots.includes(form.time)) return;
 
     setBusyId(appointment.id);
+    setSmsNotice(null);
     try {
       const tokenAssignments = buildDailyQueueAssignments(
         appointments,
@@ -2431,6 +2432,14 @@ const AttenderDashboard = ({ db, appId, profile }) => {
         appointmentId: appointment.id,
       });
       const smsResult = await sendScheduledAppointmentSms(patient?.phone || "", scheduleMessage);
+      setSmsNotice({
+        type: smsResult.sent ? "success" : "error",
+        text: smsResult.sent
+          ? `SMS sent to ${maskPhone(smsResult.phone)}.`
+          : `Appointment scheduled, but SMS was not sent. ${
+              smsResult.reason || "Check the 2Factor API key, sender ID, and browser console."
+            }`,
+      });
       await writeAuditLog(db, appId, profile, "appointment_scheduled", "appointment", appointment.id, {
         queueToken: currentToken,
         patientName: appointment.patientName,
@@ -2543,6 +2552,18 @@ const AttenderDashboard = ({ db, appId, profile }) => {
           </div>
         </Card>
       </div>
+
+      {smsNotice ? (
+        <div
+          className={`mb-6 rounded-lg border p-3 text-sm font-semibold ${
+            smsNotice.type === "success"
+              ? "border-green-200 bg-green-50 text-green-800"
+              : "border-amber-200 bg-amber-50 text-amber-800"
+          }`}
+        >
+          {smsNotice.text}
+        </div>
+      ) : null}
 
       <div className="grid gap-6 xl:grid-cols-2">
         <Card>
