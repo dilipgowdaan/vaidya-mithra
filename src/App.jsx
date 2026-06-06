@@ -1,12 +1,16 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-// --- Firebase SDK Imports (Using standard package imports) ---
+// --- Firebase SDK Imports ---
 import { initializeApp } from 'firebase/app';
-import { getAuth, signInAnonymously, onAuthStateChanged } from 'firebase/auth'; // signInWithCustomToken removed as we only use anonymous sign-in now
-import { getFirestore, collection, doc, setDoc, query, orderBy, limit, onSnapshot, serverTimestamp, setLogLevel } from 'firebase/firestore';
-
+import { 
+  getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, 
+  signOut, onAuthStateChanged, updatePassword, reauthenticateWithCredential, EmailAuthProvider 
+} from 'firebase/auth';
+import { 
+  getFirestore, collection, doc, setDoc, updateDoc, query, orderBy, limit, 
+  onSnapshot, serverTimestamp, setLogLevel, getDocs 
+} from 'firebase/firestore';
 
 // --- API Configuration ---
-// Read securely from Vercel Environment Variables
 const env = (typeof import.meta !== 'undefined' && import.meta.env) ? import.meta.env : {};
 const apiKey = env.VITE_VAIDYA_MITHRA_GEMINI_KEY || "";
 const GEMINI_API_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
@@ -15,19 +19,15 @@ const GEMINI_API_URL = `https://generativelanguage.googleapis.com/v1beta/models/
 const JSON_SCHEMA = {
   type: "OBJECT",
   properties: {
-    emergency_flag: {
-      type: "BOOLEAN",
-      description: "True if symptoms indicate a severe, life-threatening emergency (e.g., severe chest pain, inability to breathe, stroke signs). False otherwise."
-    },
+    emergency_flag: { type: "BOOLEAN" },
     predictions: {
       type: "ARRAY",
-      description: "List of the top 3 most probable diseases based on symptoms, age, and gender.",
       items: {
         type: "OBJECT",
         properties: {
-          disease: { type: "STRING", description: "The name of the potential condition." },
-          confidence: { type: "NUMBER", description: "A confidence score between 0.0 and 1.0 (e.g., 0.85 for 85%)." },
-          description: { type: "STRING", description: "A brief, non-alarming, and clear overview of the disease and suggested next steps (e.g., call a doctor in 24 hours, monitor symptoms)." }
+          disease: { type: "STRING" },
+          confidence: { type: "NUMBER" },
+          description: { type: "STRING" }
         },
         required: ["disease", "confidence", "description"]
       }
@@ -38,83 +38,41 @@ const JSON_SCHEMA = {
 
 // --- Symptom Data & Categories ---
 const ALL_SYMPTOMS_CATEGORIZED = {
-  General: [
-    'Fatigue', 'Fever', 'Headache', 'Dizziness', 'Nausea', 'Vomiting', 'Body Ache',
-    'Chills', 'Sore Throat', 'Diarrhea', 'Constipation', 'Runny Nose'
-  ],
-  Respiratory: [
-    'Cough', 'Shortness of Breath', 'Wheezing', 'Chest Tightness', 'Difficulty Breathing',
-    'Sputum Production', 'Sneezing', 'Hoarseness'
-  ],
-  Cardiac: [
-    'Chest Pain', 'Palpitations', 'Fainting', 'Swelling of Legs/Ankles',
-    'Rapid Heartbeat', 'Lightheadedness', 'Pain Radiating to Jaw/Arm'
-  ],
-  Skin: [
-    'Rash', 'Itching', 'Hives', 'Dry Skin', 'Jaundice', 'Bruising',
-    'Change in Mole appearance', 'Redness/Inflammation'
-  ],
-  Musculoskeletal: [
-    'Joint Pain', 'Muscle Pain', 'Back Pain', 'Stiffness', 'Swollen Joints',
-    'Limited Range of Motion', 'Numbness/Tingling'
-  ],
+  General: ['Fatigue', 'Fever', 'Headache', 'Dizziness', 'Nausea', 'Vomiting', 'Body Ache', 'Chills', 'Sore Throat', 'Diarrhea', 'Constipation', 'Runny Nose'],
+  Respiratory: ['Cough', 'Shortness of Breath', 'Wheezing', 'Chest Tightness', 'Difficulty Breathing', 'Sputum Production', 'Sneezing', 'Hoarseness'],
+  Cardiac: ['Chest Pain', 'Palpitations', 'Fainting', 'Swelling of Legs/Ankles', 'Rapid Heartbeat', 'Lightheadedness', 'Pain Radiating to Jaw/Arm'],
+  Skin: ['Rash', 'Itching', 'Hives', 'Dry Skin', 'Jaundice', 'Bruising', 'Change in Mole appearance', 'Redness/Inflammation'],
+  Musculoskeletal: ['Joint Pain', 'Muscle Pain', 'Back Pain', 'Stiffness', 'Swollen Joints', 'Limited Range of Motion', 'Numbness/Tingling'],
 };
-
 const SYMPTOM_CATEGORIES = Object.keys(ALL_SYMPTOMS_CATEGORIZED);
 
 // =================================================================================
 // --- HELPER & LAYOUT COMPONENTS ---
 // =================================================================================
 
-/**
- * 1. Icon Component (Simulating Lucide Icons)
- * (Added 'home' icon)
- */
 const Icon = ({ name, size = 20, color = 'currentColor', className = '' }) => {
   const icons = {
-    home: (
-      <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
-    ),
-    stethoscope: (
-      <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M12 2a3 3 0 0 0-3 3v12a3 3 0 0 0 3 3h6a3 3 0 0 0 3-3V5a3 3 0 0 0-3-3h-6zM9 12h-4a2 2 0 0 0-2 2v2M21 12h-4a2 2 0 0 1-2 2v2M12 9v6M15 15v-6M18 15v-6M9 15v-6"/></svg>
-    ),
-    messageSquare: (
-        <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
-    ),
-    hospital: (
-        <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M12 11v6m-3-3h6m7 0h-3v4a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2v-4H3m7-10l-1 4H5l-1 4m16-8l-1 4h-4l-1 4m4 4H4a2 2 0 0 0-2 2v2a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-2a2 2 0 0 0-2-2z"/></svg>
-    ),
-    history: (
-        <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M12 2v10l4-4m-6-6a9 9 0 1 1 0 18a9 9 0 0 1 0-18z"/></svg>
-    ),
-    mail: (
-        <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
-    ),
-    phone: (
-        <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-4.75-4.75A19.79 19.79 0 0 1 2.08 3.18 2 2 0 0 1 4.08 1h3a2 2 0 0 1 2 1.72 17.51 17.51 0 0 0 .15 3.37 2 2 0 0 1-1.28 2.13l-1.3 1.3A15 15 0 0 0 15 16.5l1.3-1.3a2 2 0 0 1 2.13-1.28A17.51 17.51 0 0 0 20.28 16.92z"/></svg>
-    ),
-    alertTriangle: (
-        <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
-    ),
-    chevronRight: (
-        <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><polyline points="9 18 15 12 9 6"/></svg>
-    ),
-    send: (
-        <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
-    ),
-    x: (
-        <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-    ),
-    lightbulb: (
-      <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M15.09 16.05A6.47 6.47 0 0 1 12 21.03a6.47 6.47 0 0 1-3.09-4.98c0-.62.07-1.23.21-1.81l.15-.62.62-.15c.58-.14 1.19-.21 1.81-.21h0c.62 0 1.23.07 1.81.21l.62.15.15.62c.14.58.21 1.19.21 1.81zM12 21.03V22m0-11.03V4a2 2 0 1 1 4 0v2.03M8 6.03V4a2 2 0 1 0-4 0v2.03m5.5 10.44C13.5 16 13 14.83 13 14c0-1.04.2-1.9.5-2.65M10.5 16c.5.5 1 1.17 1 2 0 1.04-.2 1.9-.5 2.65m-2-12.09c.39-.28.8-.53 1.24-.75M14.76 3.18c.44.22.85.47 1.24.75m-6 12.09c-.39.28-.8.53-1.24.75M9.24 3.18c-.44.22-.85.47-1.24.75M12 6.03V4m0 17.03V21m-3.5-13.44c-.5.5-1 1.17-1 2 0 1.04.2 1.9.5 2.65m6.5-2.65c.5.5 1 1.17 1 2 0 1.04-.2 1.9-.5 2.65"/></svg>
-    ),
+    home: <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>,
+    stethoscope: <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M12 2a3 3 0 0 0-3 3v12a3 3 0 0 0 3 3h6a3 3 0 0 0 3-3V5a3 3 0 0 0-3-3h-6zM9 12h-4a2 2 0 0 0-2 2v2M21 12h-4a2 2 0 0 1-2 2v2M12 9v6M15 15v-6M18 15v-6M9 15v-6"/></svg>,
+    messageSquare: <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>,
+    hospital: <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M12 11v6m-3-3h6m7 0h-3v4a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2v-4H3m7-10l-1 4H5l-1 4m16-8l-1 4h-4l-1 4m4 4H4a2 2 0 0 0-2 2v2a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-2a2 2 0 0 0-2-2z"/></svg>,
+    history: <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M12 2v10l4-4m-6-6a9 9 0 1 1 0 18a9 9 0 0 1 0-18z"/></svg>,
+    mail: <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>,
+    phone: <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-4.75-4.75A19.79 19.79 0 0 1 2.08 3.18 2 2 0 0 1 4.08 1h3a2 2 0 0 1 2 1.72 17.51 17.51 0 0 0 .15 3.37 2 2 0 0 1-1.28 2.13l-1.3 1.3A15 15 0 0 0 15 16.5l1.3-1.3a2 2 0 0 1 2.13-1.28A17.51 17.51 0 0 0 20.28 16.92z"/></svg>,
+    alertTriangle: <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>,
+    chevronRight: <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><polyline points="9 18 15 12 9 6"/></svg>,
+    send: <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>,
+    x: <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>,
+    lightbulb: <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M15.09 16.05A6.47 6.47 0 0 1 12 21.03a6.47 6.47 0 0 1-3.09-4.98c0-.62.07-1.23.21-1.81l.15-.62.62-.15c.58-.14 1.19-.21 1.81-.21h0c.62 0 1.23.07 1.81.21l.62.15.15.62c.14.58.21 1.19.21 1.81zM12 21.03V22m0-11.03V4a2 2 0 1 1 4 0v2.03M8 6.03V4a2 2 0 1 0-4 0v2.03m5.5 10.44C13.5 16 13 14.83 13 14c0-1.04.2-1.9.5-2.65M10.5 16c.5.5 1 1.17 1 2 0 1.04-.2 1.9-.5 2.65m-2-12.09c.39-.28.8-.53 1.24-.75M14.76 3.18c.44.22.85.47 1.24.75m-6 12.09c-.39.28-.8.53-1.24.75M9.24 3.18c-.44.22-.85.47-1.24.75M12 6.03V4m0 17.03V21m-3.5-13.44c-.5.5-1 1.17-1 2 0 1.04.2 1.9.5 2.65m6.5-2.65c.5.5 1 1.17 1 2 0 1.04-.2 1.9-.5 2.65"/></svg>,
+    user: <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>,
+    logOut: <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>,
+    bell: <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>,
+    calendar: <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>,
+    users: <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
   };
   return icons[name] || <div style={{ width: size, height: size }}>?</div>;
 };
 
-/**
- * 2. New Logo Component
- */
 const Logo = () => (
   <div className="flex items-center flex-shrink-0">
     <div className="p-1 bg-blue-600 rounded-lg">
@@ -126,101 +84,131 @@ const Logo = () => (
   </div>
 );
 
-/**
- * 3. Navigation Bar (Modified for State-based Navigation and Mobile Menu)
- */
-const NavBar = ({ currentPage, onNavigate }) => {
-    const [isMenuOpen, setIsMenuOpen] = useState(false);
-    
-    const navItems = [
-        { id: "home", name: "Home", icon: "home" },
-        { id: "prediction", name: "Prediction", icon: "stethoscope" },
-        { id: "docbot", name: "DocBot", icon: "messageSquare" },
-        { id: "hospitals", name: "Hospitals", icon: "hospital" },
-        { id: "contact", name: "Contact", icon: "mail" },
-    ];
+const NavBar = ({ currentPage, onNavigate, userProfile, onLogout, unreadCount }) => {
+  const [isMenuOpen, setIsMenuOpen] = useState(false);
+  
+  const getNavItems = () => {
+    if (!userProfile) return [];
+    const base = [{ id: "profile", name: "Profile", icon: "user" }];
+    const support = { id: "contact", name: "Support", icon: "mail" };
 
-    const handleNavigation = (id) => {
-        onNavigate(id);
-        setIsMenuOpen(false); // Close menu on navigation
-    };
+    switch (userProfile.role) {
+      case 'patient':
+        return [
+          { id: "home", name: "Home", icon: "home" },
+          { id: "appointments", name: "Appointments", icon: "calendar" },
+          { id: "prediction", name: "AI Triage", icon: "stethoscope" },
+          { id: "docbot", name: "DocBot", icon: "messageSquare" },
+          { id: "hospitals", name: "Hospitals", icon: "hospital" },
+          ...base, support
+        ];
+      case 'doctor':
+        return [
+          { id: "doctor-dashboard", name: "Consultations", icon: "calendar" },
+          { id: "doctor-history", name: "History", icon: "history" },
+          ...base, support
+        ];
+      case 'attender':
+        return [
+          { id: "attender-dashboard", name: "Queue & Triage", icon: "users" },
+          ...base, support
+        ];
+      case 'admin':
+        return [
+          { id: "admin-dashboard", name: "System Stats", icon: "home" },
+          { id: "admin-approvals", name: "Approvals", icon: "alertTriangle" },
+          { id: "admin-users", name: "Directory", icon: "users" },
+          { id: "admin-logs", name: "System Logs", icon: "history" },
+          ...base, support
+        ];
+      default:
+        return base;
+    }
+  };
 
-    return (
-        <nav className="fixed top-0 left-0 right-0 z-50 bg-white/80 backdrop-blur-md shadow-lg border-b border-gray-200/80 flex-shrink-0">
-            <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-                <div className="flex justify-between items-center h-16">
-                    <a href="#" onClick={(e) => { e.preventDefault(); handleNavigation('home'); }} className="no-underline">
-                        <Logo />
-                    </a>
-                    
-                    {/* Desktop Menu */}
-                    <div className="hidden md:flex space-x-4">
-                        {navItems.map((item) => {
-                            const isActive = currentPage === item.id;
-                            return (
-                                <a
-                                    key={item.id}
-                                    href="#"
-                                    onClick={(e) => { e.preventDefault(); handleNavigation(item.id); }}
-                                    className={`px-3 py-2 rounded-lg text-sm font-medium flex items-center transition duration-150 ${
-                                        isActive
-                                            ? 'bg-blue-100 text-blue-700'
-                                            : 'text-gray-700 hover:bg-blue-50 hover:text-blue-600'
-                                    }`}
-                                >
-                                    <Icon name={item.icon} size={18} className="mr-2" color="currentColor" />
-                                    {item.name}
-                                </a>
-                            );
-                        })}
-                    </div>
-                    
-                    {/* Mobile Menu Button */}
-                    <button
-                        className="md:hidden p-2 rounded-lg text-gray-700 hover:bg-gray-100 transition"
-                        onClick={() => setIsMenuOpen(!isMenuOpen)}
-                    >
-                         {isMenuOpen ? (
-                             <Icon name="x" size={24} />
-                         ) : (
-                            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="3" y1="12" x2="21" y2="12"></line><line x1="3" y1="6" x2="21" y2="6"></line><line x1="3" y1="18" x2="21" y2="18"></line></svg>
-                         )}
-                    </button>
-                </div>
-            </div>
+  const navItems = getNavItems();
 
-            {/* Mobile Menu Overlay */}
-            {isMenuOpen && (
-                <div 
-                    className="md:hidden absolute top-16 left-0 w-full bg-white/95 backdrop-blur-lg shadow-lg border-t border-gray-200/80 transform origin-top transition-all duration-300 ease-out"
-                    style={{ maxHeight: 'calc(100vh - 4rem)' }}
+  const handleNavigation = (id) => {
+    onNavigate(id);
+    setIsMenuOpen(false);
+  };
+
+  return (
+    <nav className="flex-shrink-0 bg-white/90 backdrop-blur-md shadow-sm border-b border-gray-200/80 z-50">
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div className="flex justify-between items-center h-16">
+          <a href="#" onClick={(e) => { e.preventDefault(); if (userProfile?.role === 'patient') handleNavigation('home'); }} className="no-underline">
+            <Logo />
+          </a>
+          
+          <div className="hidden md:flex items-center space-x-2">
+            {navItems.map((item) => {
+              const isActive = currentPage === item.id;
+              return (
+                <a
+                  key={item.id} href="#"
+                  onClick={(e) => { e.preventDefault(); handleNavigation(item.id); }}
+                  className={`px-3 py-2 rounded-lg text-sm font-medium flex items-center transition duration-150 relative ${
+                    isActive ? 'bg-blue-100 text-blue-700' : 'text-gray-700 hover:bg-blue-50 hover:text-blue-600'
+                  }`}
                 >
-                    <div className="flex flex-col p-4 space-y-2">
-                        {navItems.map((item) => (
-                            <a
-                                key={item.id}
-                                href="#"
-                                onClick={(e) => { e.preventDefault(); handleNavigation(item.id); }}
-                                className={`px-4 py-3 rounded-lg text-lg font-medium flex items-center transition duration-150 ${
-                                    currentPage === item.id
-                                        ? 'bg-blue-100 text-blue-700'
-                                        : 'text-gray-800 hover:bg-blue-50'
-                                }`}
-                            >
-                                <Icon name={item.icon} size={20} className="mr-3" color="currentColor" />
-                                {item.name}
-                            </a>
-                        ))}
-                    </div>
+                  <Icon name={item.icon} size={18} className="mr-2" color="currentColor" />
+                  {item.name}
+                  {item.id === 'appointments' && unreadCount > 0 && (
+                    <span className="absolute top-1 right-1 flex h-3 w-3">
+                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span>
+                      <span className="relative inline-flex rounded-full h-3 w-3 bg-red-500"></span>
+                    </span>
+                  )}
+                </a>
+              );
+            })}
+            <button onClick={onLogout} className="ml-4 px-3 py-2 rounded-lg text-sm font-medium text-red-600 hover:bg-red-50 flex items-center transition">
+              <Icon name="logOut" size={18} className="mr-2" /> Logout
+            </button>
+          </div>
+          
+          <div className="md:hidden flex items-center">
+             {userProfile?.role === 'patient' && unreadCount > 0 && (
+                <div className="mr-4 relative">
+                  <Icon name="bell" size={24} color="#3b82f6" />
+                  <span className="absolute 0 right-0 flex h-3 w-3">
+                    <span className="relative inline-flex rounded-full h-3 w-3 bg-red-500"></span>
+                  </span>
                 </div>
-            )}
-        </nav>
-    );
+              )}
+            <button className="p-2 rounded-lg text-gray-700 hover:bg-gray-100 transition" onClick={() => setIsMenuOpen(!isMenuOpen)}>
+              {isMenuOpen ? <Icon name="x" size={24} /> : <Icon name="home" size={24} />}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {isMenuOpen && (
+        <div className="md:hidden absolute w-full bg-white/95 backdrop-blur-lg shadow-lg border-t border-gray-200/80 z-50">
+          <div className="flex flex-col p-4 space-y-2">
+            {navItems.map((item) => (
+              <a
+                key={item.id} href="#"
+                onClick={(e) => { e.preventDefault(); handleNavigation(item.id); }}
+                className={`px-4 py-3 rounded-lg text-lg font-medium flex items-center transition duration-150 ${
+                  currentPage === item.id ? 'bg-blue-100 text-blue-700' : 'text-gray-800 hover:bg-blue-50'
+                }`}
+              >
+                <Icon name={item.icon} size={20} className="mr-3" color="currentColor" />
+                {item.name}
+              </a>
+            ))}
+            <button onClick={onLogout} className="px-4 py-3 rounded-lg text-lg font-medium text-red-600 hover:bg-red-50 flex items-center transition text-left">
+              <Icon name="logOut" size={20} className="mr-3" /> Logout
+            </button>
+          </div>
+        </div>
+      )}
+    </nav>
+  );
 };
 
-/**
- * 4. Skeleton Loader Component
- */
 const SkeletonCard = () => (
   <div className="p-4 rounded-xl border border-gray-200 bg-gray-50 shadow-sm animate-pulse">
     <div className="flex justify-between items-center mb-3">
@@ -234,418 +222,253 @@ const SkeletonCard = () => (
   </div>
 );
 
-/**
- * 5. MODIFIED: Footer Component (Now a slim bar)
- */
 const Footer = ({ className = '' }) => (
-  <div id="footer" className={`bg-white/70 backdrop-blur-sm border-t border-gray-200 py-4 px-4 sm:px-8 ${className}`}>
-    <p className="text-xs text-gray-600 text-center max-w-4xl mx-auto mb-2">
-      <strong>Disclaimer:</strong> This application is for informational and educational purposes only and is <strong>NOT</strong> a substitute for professional medical advice, diagnosis, or treatment. Always seek the advice of your physician with any questions you may have regarding a medical condition.
+  <div className={`bg-white/90 backdrop-blur-sm border-t border-gray-200 py-3 px-4 sm:px-8 flex-shrink-0 ${className}`}>
+    <p className="text-xs text-gray-600 text-center max-w-5xl mx-auto mb-1">
+      <strong>Disclaimer:</strong> This application is for informational purposes. NOT a substitute for professional medical advice. Supported by Center of Excellence in Supply Chain Management (CoE-SCM).
     </p>
     <p className="text-xs text-gray-500 text-center">
-      &copy; 2025 Vaidya Mithra. All rights reserved.
+      © 2026 Vaidya Mithra HMIS. All rights reserved.
     </p>
   </div>
 );
 
-
 // =================================================================================
-// --- "PAGE" COMPONENTS ---
+// --- AUTH & RBAC COMPONENTS ---
 // =================================================================================
 
-/**
- * PAGE 1: Home Page (Modified to fill flex-grow)
- */
-const HomePage = ({ onNavigate }) => (
-  <div className="h-full flex flex-col items-center justify-center bg-gradient-to-r from-blue-500 to-cyan-500 overflow-hidden p-4 sm:p-8">
-    <div className="absolute inset-0 opacity-10 bg-cover bg-center" style={{backgroundImage: "url('https://placehold.co/1920x800/ffffff/000000?text=Health+Data+Analysis')"}}></div>
-    
-    <div className="z-10 text-center text-white p-4 max-w-4xl">
-      <h1 
-        className="text-4xl md:text-6xl font-extrabold mb-4 drop-shadow-lg tracking-tight opacity-0"
-        style={{ animation: 'fadeInUp 0.6s 0.2s ease-out forwards' }}
-      >
-        Welcome to Vaidya Mithra
-      </h1>
-      <p 
-        className="text-lg md:text-xl mb-8 font-light drop-shadow-md opacity-0"
-        style={{ animation: 'fadeInUp 0.6s 0.4s ease-out forwards' }}
-      >
-        Get non-diagnostic insights and next steps in seconds. Powered by Gemini AI for responsible health guidance.
-      </p>
-      <a
-        href="#prediction"
-        onClick={(e) => { e.preventDefault(); onNavigate('prediction'); }}
-        className="inline-flex items-center px-8 py-3 bg-green-500 text-white text-lg font-semibold rounded-full shadow-xl hover:bg-green-600 transition-all duration-300 transform hover:scale-105 opacity-0"
-        style={{ animation: 'fadeInUp 0.6s 0.6s ease-out forwards' }}
-      >
-        Start Health Check
-        <Icon name="chevronRight" size={24} className="ml-2" color="white" />
-      </a>
+const AuthPage = ({ onAuthSuccess, db, auth, appId }) => {
+  const [isLogin, setIsLogin] = useState(true);
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [role, setRole] = useState('patient');
+  const [name, setName] = useState('');
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setError('');
+    setLoading(true);
+
+    try {
+      if (isLogin) {
+        if (email === 'admin@gmail.com' && password === 'Admin@123') {
+          try {
+            await signInWithEmailAndPassword(auth, email, password);
+          } catch (err) {
+            // If super admin doesn't exist, create it
+            const cred = await createUserWithEmailAndPassword(auth, email, password);
+            const adminData = { email, role: 'admin', status: 'approved', name: 'Super Admin', createdAt: serverTimestamp() };
+            await setDoc(doc(db, `artifacts/${appId}/all_users`, cred.user.uid), adminData);
+            await setDoc(doc(db, `artifacts/${appId}/users/${cred.user.uid}/profile`, 'data'), adminData);
+          }
+        } else {
+          await signInWithEmailAndPassword(auth, email, password);
+        }
+      } else {
+        const cred = await createUserWithEmailAndPassword(auth, email, password);
+        const status = role === 'patient' ? 'approved' : 'pending';
+        const userData = { email, role, status, name, age: '', gender: '', createdAt: serverTimestamp() };
+        
+        // Save to TWO places as required
+        await setDoc(doc(db, `artifacts/${appId}/all_users`, cred.user.uid), userData);
+        await setDoc(doc(db, `artifacts/${appId}/users/${cred.user.uid}/profile`, 'data'), userData);
+      }
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 to-cyan-50 p-4">
+      <div className="bg-white p-8 rounded-2xl shadow-xl w-full max-w-md border border-blue-100">
+        <div className="flex justify-center mb-6"><Logo /></div>
+        <h2 className="text-2xl font-bold text-center text-blue-900 mb-6">{isLogin ? 'Sign In to HMIS' : 'Create Account'}</h2>
+        
+        {error && <div className="bg-red-50 text-red-600 p-3 rounded-lg mb-4 text-sm">{error}</div>}
+        
+        <form onSubmit={handleSubmit} className="space-y-4">
+          {!isLogin && (
+            <>
+              <div>
+                <label className="block text-sm font-medium text-gray-700">Full Name</label>
+                <input required type="text" value={name} onChange={e => setName(e.target.value)} className="mt-1 w-full p-3 border border-gray-300 rounded-xl focus:ring-blue-500" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700">Select Role</label>
+                <select value={role} onChange={e => setRole(e.target.value)} className="mt-1 w-full p-3 border border-gray-300 rounded-xl focus:ring-blue-500 bg-white">
+                  <option value="patient">Patient (Auto-Approve)</option>
+                  <option value="doctor">Doctor (Requires Admin Approval)</option>
+                  <option value="attender">Attender (Requires Admin Approval)</option>
+                </select>
+              </div>
+            </>
+          )}
+          <div>
+            <label className="block text-sm font-medium text-gray-700">Email</label>
+            <input required type="email" value={email} onChange={e => setEmail(e.target.value)} className="mt-1 w-full p-3 border border-gray-300 rounded-xl focus:ring-blue-500" />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700">Password</label>
+            <input required type="password" value={password} onChange={e => setPassword(e.target.value)} className="mt-1 w-full p-3 border border-gray-300 rounded-xl focus:ring-blue-500" />
+          </div>
+          <button disabled={loading} type="submit" className="w-full bg-blue-600 text-white font-bold py-3 rounded-xl hover:bg-blue-700 transition disabled:opacity-50">
+            {loading ? 'Processing...' : (isLogin ? 'Sign In' : 'Sign Up')}
+          </button>
+        </form>
+        <div className="mt-6 text-center text-sm">
+          <button onClick={() => setIsLogin(!isLogin)} className="text-blue-600 hover:underline">
+            {isLogin ? "Need an account? Sign up" : "Already have an account? Sign in"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const PendingStatePage = ({ onLogout }) => (
+  <div className="h-full flex items-center justify-center p-4">
+    <div className="bg-white p-8 rounded-2xl shadow-xl max-w-md text-center border border-yellow-200">
+      <Icon name="alertTriangle" size={48} className="mx-auto text-yellow-500 mb-4" />
+      <h2 className="text-2xl font-bold text-gray-800 mb-2">Wait for confirmation</h2>
+      <p className="text-gray-600 mb-6">Your staff account is currently pending approval by an administrator. This page will automatically refresh once you are approved.</p>
+      <button onClick={onLogout} className="text-blue-600 font-medium hover:underline">Sign out and return later</button>
     </div>
   </div>
 );
 
-/**
- * PAGE 2: Hospital Finder Page (Modified to center in viewport)
- */
-const HospitalPage = () => {
-  const [status, setStatus] = useState('ready'); // ready, loading, found, error
+// =================================================================================
+// --- DASHBOARDS & WORKFLOW PAGES ---
+// =================================================================================
 
-  const findHospitals = () => {
-    if (!navigator.geolocation) {
-      setStatus('error');
-      console.warn("User Alert: Geolocation is not supported by your browser. Please search manually.");
-      return;
+const ProfilePage = ({ db, auth, userId, appId, userProfile }) => {
+  const [name, setName] = useState(userProfile?.name || '');
+  const [phone, setPhone] = useState(userProfile?.phone || '');
+  const [age, setAge] = useState(userProfile?.age || '');
+  const [gender, setGender] = useState(userProfile?.gender || '');
+  const [statusMsg, setStatusMsg] = useState('');
+
+  const handleUpdate = async (e) => {
+    e.preventDefault();
+    setStatusMsg('Updating...');
+    try {
+      const updates = { name, phone, age, gender };
+      await updateDoc(doc(db, `artifacts/${appId}/all_users`, userId), updates);
+      await updateDoc(doc(db, `artifacts/${appId}/users/${userId}/profile`, 'data'), updates);
+      setStatusMsg('Profile updated successfully!');
+      setTimeout(() => setStatusMsg(''), 3000);
+    } catch (err) {
+      setStatusMsg(`Error: ${err.message}`);
     }
-
-    setStatus('loading');
-    navigator.geolocation.getCurrentPosition(
-      (position) => {
-        const lat = position.coords.latitude;
-        const lon = position.coords.longitude;
-        setStatus('found');
-
-        // Construct Google Maps URL for nearby hospitals
-        const mapsUrl = `https://www.google.com/maps/search/?api=1&query=hospitals+near+${lat},${lon}`;
-        
-        // Redirect user to Google Maps in a new tab
-        window.open(mapsUrl, '_blank');
-      },
-      (error) => {
-        console.error("Geolocation error:", error);
-        setStatus('error');
-        console.warn(`User Alert: Error getting location: ${error.message}. Please search manually.`);
-      },
-      {
-        enableHighAccuracy: true,
-        timeout: 5000,
-        maximumAge: 0
-      }
-    );
   };
 
   return (
-    // This container centers the card vertically and horizontally
-    <div id="hospitals-page" className="h-full flex items-center justify-center p-4 sm:p-8">
-      <div 
-        className="bg-white/80 backdrop-blur-lg shadow-2xl rounded-2xl p-6 sm:p-8 border border-gray-200/50 transition-all duration-300 hover:shadow-cyan-100 max-w-2xl w-full opacity-0"
-        style={{ animation: 'fadeInUp 0.5s ease-out forwards' }}
-      >
-        <h2 className="text-2xl sm:text-3xl font-extrabold text-blue-800 mb-6 flex items-center">
-          <Icon name="hospital" size={30} className="mr-3 text-blue-500" />
-          Nearby Hospitals & Clinics
-        </h2>
-        <p className="text-gray-600 mb-6 text-sm sm:text-base">
-          Quickly find the nearest medical facilities. We will use your current location to launch a localized Google Maps search.
-        </p>
-
-        <div className="flex flex-col sm:flex-row items-center space-y-4 sm:space-y-0 sm:space-x-4">
-          <button
-            onClick={findHospitals}
-            disabled={status === 'loading'}
-            className="w-full sm:w-auto bg-green-500 hover:bg-green-600 text-white font-bold py-3 px-6 rounded-xl transition-all duration-300 disabled:opacity-50 flex items-center justify-center transform hover:scale-105"
-          >
-            {status === 'loading' ? (
-              <>
-                <svg className="animate-spin -ml-1 mr-3 h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
-                Finding Location...
-              </>
-            ) : (
-              <>
-                Find Hospitals Now <Icon name="chevronRight" size={20} className="ml-2" color="white" />
-              </>
-            )}
-          </button>
-          {status === 'found' && (
-            <p className="text-sm text-green-600">Redirected to Google Maps based on your location!</p>
-          )}
-          {status === 'error' && (
-            <p className="text-sm text-red-600">Error: Could not retrieve location data.</p>
-          )}
-        </div>
+    <div className="max-w-2xl mx-auto p-4 sm:p-8">
+      <div className="bg-white shadow-lg rounded-2xl p-6 border border-gray-100">
+        <h2 className="text-2xl font-bold text-blue-900 mb-6 flex items-center"><Icon name="user" className="mr-2" /> My Profile</h2>
+        {statusMsg && <div className="mb-4 p-3 bg-blue-50 text-blue-700 rounded-lg text-sm">{statusMsg}</div>}
+        <form onSubmit={handleUpdate} className="space-y-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-700">Role</label>
+              <input disabled type="text" value={userProfile?.role.toUpperCase()} className="mt-1 w-full p-3 bg-gray-100 border border-gray-300 rounded-xl" />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700">Email</label>
+              <input disabled type="text" value={userProfile?.email} className="mt-1 w-full p-3 bg-gray-100 border border-gray-300 rounded-xl" />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700">Full Name</label>
+              <input type="text" value={name} onChange={e=>setName(e.target.value)} className="mt-1 w-full p-3 border border-gray-300 rounded-xl focus:ring-blue-500" />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700">Phone</label>
+              <input type="tel" value={phone} onChange={e=>setPhone(e.target.value)} className="mt-1 w-full p-3 border border-gray-300 rounded-xl focus:ring-blue-500" />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700">Age</label>
+              <input type="number" value={age} onChange={e=>setAge(e.target.value)} className="mt-1 w-full p-3 border border-gray-300 rounded-xl focus:ring-blue-500" />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700">Gender</label>
+              <select value={gender} onChange={e=>setGender(e.target.value)} className="mt-1 w-full p-3 border border-gray-300 rounded-xl focus:ring-blue-500 bg-white">
+                <option value="">Select...</option>
+                <option value="Male">Male</option>
+                <option value="Female">Female</option>
+                <option value="Other">Other</option>
+              </select>
+            </div>
+          </div>
+          <button type="submit" className="mt-4 bg-blue-600 text-white font-bold py-2 px-6 rounded-xl hover:bg-blue-700 transition">Save Profile</button>
+        </form>
       </div>
     </div>
   );
 };
 
-/**
- * PAGE 3: DocBot Chat Page (Modified to fill viewport)
- */
-const DocBotPage = ({ db, userId, auth, authReady, appId }) => { // <-- Added appId prop
-  const CHAT_BOT_SYSTEM_INSTRUCTION = "You are a friendly, non-diagnostic AI assistant named DocBot. Your role is to answer general health questions, provide basic medical information, explain symptoms, and offer clear advice on when to see a doctor. Never provide a formal diagnosis, treatment, or specific medication advice. Keep responses encouraging and concise. Only provide one possible condition and safe general advice. Use Google Search grounding when necessary.";
-
-  const [chatHistory, setChatHistory] = useState([]);
-  const [currentMessage, setCurrentMessage] = useState('');
-  const [isTyping, setIsTyping] = useState(false);
-  const messagesEndRef = useRef(null);
-
-  const suggestedQuestions = [
-    "What are the symptoms of the flu?",
-    "How can I relieve a headache?",
-    "What is hypertension?",
-  ];
-
-  const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  };
-
-  useEffect(scrollToBottom, [chatHistory]);
-
-  // Firestore Listener
+const PatientAppointments = ({ db, userId, appId, userProfile }) => {
+  const [reason, setReason] = useState('');
+  const [appointments, setAppointments] = useState([]);
+  
   useEffect(() => {
-    // MODIFIED: Uses new appId prop and checks authReady
-    if (!authReady || !userId || !db || !appId) return;
-
-    try {
-      // MODIFIED: Uses appId prop to build path
-      const chatCollectionRef = collection(db, `artifacts/${appId}/users/${userId}/docbot_chat`);
-      const q = query(chatCollectionRef, orderBy('timestamp', 'asc'), limit(50));
-
-      const unsubscribe = onSnapshot(q, (snapshot) => {
-        const history = snapshot.docs.map(doc => ({...doc.data(), id: doc.id })); // Add id
-        setChatHistory(history);
-      }, (error) => {
-        console.error("Error fetching chat history from Firestore:", error);
-      });
-
-      return () => unsubscribe();
-    } catch (e) {
-      console.error("Firestore Chat Setup Failed:", e);
-    }
-  }, [db, userId, authReady, appId]); // <-- Added appId dependency
-
-  // Exponential Backoff Fetch Utility
-  const fetchWithBackoff = useCallback(async (url, options, retries = 3, delay = 1000) => {
-    for (let i = 0; i < retries; i++) {
-      try {
-        const response = await fetch(url, options);
-        if (response.ok) {
-          return response;
-        } else if (response.status === 429 && i < retries - 1) {
-          await new Promise(resolve => setTimeout(resolve, delay));
-          delay *= 2; // Exponential backoff
-          continue;
-        } else {
-          throw new Error(`API returned status ${response.status}`);
-        }
-      } catch (error) {
-        if (i === retries - 1) throw error;
-        await new Promise(resolve => setTimeout(resolve, delay));
-        delay *= 2;
-      }
-    }
-  }, []);
-
-  const handleSend = async (messageText) => {
-    const message = (typeof messageText === 'string') ? messageText : currentMessage;
-    // MODIFIED: Uses new appId prop
-    if (!message.trim() || isTyping || !db || !userId || !appId) return;
-
-    const userMessage = message.trim();
-    setCurrentMessage('');
-    
-    // MODIFIED: Uses appId prop to build path
-    const chatCollectionRef = collection(db, `artifacts/${appId}/users/${userId}/docbot_chat`);
-    
-    // 1. Save user message to Firestore
-    const userDocRef = doc(chatCollectionRef);
-    await setDoc(userDocRef, {
-      text: userMessage,
-      role: 'user',
-      timestamp: serverTimestamp(),
-      id: userDocRef.id
+    if (!db || !appId || !userId) return;
+    const q = query(collection(db, `artifacts/${appId}/appointments`));
+    const unsub = onSnapshot(q, (snap) => {
+      // Client side filter
+      const apps = snap.docs.map(d => ({id: d.id, ...d.data()})).filter(a => a.patientId === userId).sort((a,b) => b.timestamp - a.timestamp);
+      setAppointments(apps);
     });
+    return () => unsub();
+  }, [db, appId, userId]);
 
-    setIsTyping(true);
-
-    try {
-      const apiHistory = chatHistory.map(msg => ({
-        role: msg.role === 'ai' ? 'model' : 'user',
-        parts: [{ text: msg.text }]
-      }));
-      
-      apiHistory.push({ role: 'user', parts: [{ text: userMessage }] });
-
-
-      const payload = {
-        contents: apiHistory,
-        tools: [{ "google_search": {} }],
-        systemInstruction: {
-          parts: [{ text: CHAT_BOT_SYSTEM_INSTRUCTION }]
-        },
-      };
-
-      const response = await fetchWithBackoff(GEMINI_API_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      });
-
-      const result = await response.json();
-      const aiText = result.candidates?.[0]?.content?.parts?.[0]?.text || "Sorry, I couldn't process that request right now. Please try again later.";
-      
-      // 2. Save AI response to Firestore
-      const aiDocRef = doc(chatCollectionRef);
-      await setDoc(aiDocRef, {
-        text: aiText,
-        role: 'ai',
-        timestamp: serverTimestamp(),
-        id: aiDocRef.id
-      });
-      
-    } catch (error) {
-      console.error("Chatbot API failed:", error);
-       // Save error message to Firestore
-      const errorDocRef = doc(chatCollectionRef);
-      await setDoc(errorDocRef, {
-        text: "I ran into a technical error. Please try refreshing or checking your network connection.",
-        role: 'ai_error',
-        timestamp: serverTimestamp(),
-        id: errorDocRef.id
-      });
-    } finally {
-      setIsTyping(false);
-    }
+  const handleRequest = async (e) => {
+    e.preventDefault();
+    if (!reason.trim()) return;
+    const ref = doc(collection(db, `artifacts/${appId}/appointments`));
+    await setDoc(ref, {
+      patientId: userId,
+      patientName: userProfile.name,
+      patientAge: userProfile.age || 'N/A',
+      reason,
+      status: 'requested',
+      timestamp: Date.now()
+    });
+    setReason('');
   };
 
-  const ChatBubble = ({ message }) => {
-    const isUser = message.role === 'user';
-    const isError = message.role === 'ai_error';
-    const bubbleClass = isUser
-      ? 'bg-blue-500 text-white self-end rounded-br-none'
-      : 'bg-gray-100 text-gray-800 self-start rounded-tl-none';
-    
-    const errorClass = isError 
-      ? 'bg-red-100 text-red-700 self-start border border-red-300'
-      : '';
-
-    return (
-      <div className={`max-w-xs sm:max-w-md p-3 rounded-xl shadow-md my-2 ${bubbleClass} ${errorClass}`}>
-        <p className="whitespace-pre-wrap">{message.text}</p>
-      </div>
-    );
-  };
+  const statusColors = { requested: 'bg-yellow-100 text-yellow-800', scheduled: 'bg-blue-100 text-blue-800', ready: 'bg-purple-100 text-purple-800', completed: 'bg-green-100 text-green-800' };
 
   return (
-    // This container fills the available height
-    <div id="chatbot-page" className="h-full p-4 sm:p-8 flex flex-col">
-      {/* This card grows to fill the height, creating the "still" page effect */}
-      <div 
-        className="bg-white/80 backdrop-blur-lg shadow-2xl rounded-2xl p-4 sm:p-8 border border-gray-200/50 flex flex-col flex-grow h-full transition-all duration-300 opacity-0"
-        style={{ animation: 'fadeInUp 0.5s ease-out forwards' }}
-      >
-        <h2 className="text-3xl font-extrabold text-blue-800 mb-6 flex items-center flex-shrink-0">
-          <Icon name="messageSquare" size={30} className="mr-3 text-green-500" />
-          DocBot - Your AI Health Assistant
-        </h2>
+    <div className="max-w-4xl mx-auto p-4 sm:p-8 space-y-6">
+      <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-200">
+        <h2 className="text-xl font-bold text-blue-900 mb-4">Request Consultation</h2>
+        <form onSubmit={handleRequest} className="space-y-3">
+          <textarea required value={reason} onChange={e=>setReason(e.target.value)} placeholder="Explain your reason for visit / symptoms..." className="w-full p-3 border border-gray-300 rounded-xl focus:ring-blue-500 h-24" />
+          <button type="submit" className="bg-blue-600 text-white font-bold py-2 px-6 rounded-xl hover:bg-blue-700 transition">Request Consult</button>
+        </form>
+      </div>
 
-        {/* Chat History Area - This now grows and scrolls internally */}
-        <div className="flex-grow overflow-y-auto p-4 mb-4 bg-gray-50/70 rounded-lg border border-gray-200 flex flex-col space-y-3">
-          {chatHistory.length === 0 && !isTyping ? (
-            <div 
-              className="text-center text-gray-500 m-auto opacity-0"
-              style={{ animation: 'fadeIn 0.5s 0.3s ease-out forwards' }}
-            >
-              <Icon name="stethoscope" size={40} className="mx-auto mb-2 text-blue-400" />
-              <p>Hello! I am DocBot. Ask me any general health questions.</p>
-              
-              {/* Suggested Questions */}
-              <div className="mt-6">
-                <h4 className="text-sm font-semibold text-gray-600 mb-3 flex items-center justify-center">
-                  <Icon name="lightbulb" size={16} className="mr-2 text-yellow-500" />
-                  Try asking...
-                </h4>
-                <div className="flex flex-col sm:flex-row gap-2 justify-center">
-                  {suggestedQuestions.map((q) => (
-                    <button
-                      key={q}
-                      onClick={() => handleSend(q)}
-                      className="px-4 py-2 bg-blue-50 text-blue-700 rounded-full text-sm font-medium transition-all duration-200 hover:bg-blue-100 hover:shadow-sm transform hover:scale-105"
-                    >
-                      "{q}"
-                    </button>
-                  ))}
+      <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-200">
+        <h2 className="text-xl font-bold text-blue-900 mb-4">My Appointments History</h2>
+        <div className="space-y-4">
+          {appointments.length === 0 ? <p className="text-gray-500 text-sm">No appointments found.</p> : appointments.map(app => (
+            <div key={app.id} className="p-4 border border-gray-100 rounded-xl bg-gray-50 flex flex-col sm:flex-row justify-between gap-4">
+              <div>
+                <div className="flex items-center gap-2 mb-2">
+                  <span className={`text-xs font-bold px-2 py-1 rounded-md uppercase ${statusColors[app.status]}`}>{app.status}</span>
+                  <span className="text-xs text-gray-500">{new Date(app.timestamp).toLocaleString()}</span>
                 </div>
-              </div>
-            </div>
-          ) : (
-            chatHistory.map((msg, index) => (
-              <ChatBubble key={msg.id || index} message={msg} />
-            ))
-          )}
-          {isTyping && (
-            <div className="max-w-xs p-3 rounded-xl shadow-md bg-gray-100 text-gray-800 self-start rounded-tl-none animate-pulse">
-              <span className="dot-flashing"></span>
-            </div>
-          )}
-          <div ref={messagesEndRef} />
-        </div>
-
-        {/* Input Area - This stays at the bottom */}
-        <div className="flex space-x-2 flex-shrink-0">
-          <input
-            type="text"
-            value={currentMessage}
-            onChange={(e) => setCurrentMessage(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && handleSend()}
-            className="flex-grow p-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition duration-150"
-            placeholder={!authReady ? "Loading connection..." : "Ask DocBot a health question..."}
-            disabled={isTyping || !authReady}
-          />
-          <button
-            onClick={() => handleSend()}
-            disabled={isTyping || !currentMessage.trim() || !authReady}
-            className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-4 rounded-xl transition-all duration-300 disabled:opacity-50 flex items-center justify-center transform hover:scale-105"
-          >
-            <Icon name="send" size={20} color="white" />
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-};
-
-
-/**
- * PAGE 4: Contact Page (Modified to center in viewport)
- */
-const ContactPage = () => {
-  const TEAM_CONTACTS = useMemo(() => [
-    { name: "Dilip Kumar A N", phone: "7259447817", email: "dilipkumaran.ec23@rvce.edu.in" },
-    { name: "Arya B V", phone: "8050141198", email: "aryabv.ec23@rvce.edu.in" },
-  ], []);
-
-  return (
-    // This container centers the card vertically and horizontally
-    <div id="contact-page" className="h-full flex p-4 sm:p-6"> {/* MODIFIED: Simplified container and padding */}
-      <div 
-        className="bg-white/80 backdrop-blur-lg shadow-2xl rounded-2xl p-6 border border-gray-200/50 transition-all duration-300 max-w-5xl w-full flex flex-col m-auto opacity-0" /* MODIFIED: m-auto, max-w-4xl to max-w-5xl, p-6 */
-        style={{ animation: 'fadeInUp 0.5s ease-out forwards' }}
-      >
-        <h2 className="text-3xl font-extrabold text-blue-800 mb-4 flex items-center flex-shrink-0"> {/* MODIFIED: mb-6 to mb-4 */ }
-          <Icon name="mail" size={30} className="mr-3 text-blue-500" />
-          Contact the Team
-        </h2>
-        <p className="text-gray-600 mb-6 flex-shrink-0"> {/* MODIFIED: mb-8 to mb-6 */ }
-          For technical support, legal inquiries, or other questions, please reach out to the relevant department.
-        </p>
-
-        {/* This grid is now horizontal on larger screens */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4"> {/* MODIFIED: Added lg:grid-cols-4 */}
-          {TEAM_CONTACTS.map((person) => (
-            <div 
-              key={person.name} 
-              className="bg-gray-50/80 border border-gray-200/50 p-4 rounded-xl shadow-md transition-all duration-300 hover:shadow-lg hover:scale-[1.03] hover:border-blue-300"
-            >
-              <p className="font-bold text-lg text-blue-800 mb-2">{person.name}</p> {/* MODIFIED: text-xl to text-lg, mb-3 to mb-2 */ }    
-              <div className="flex items-center text-sm text-gray-700 mb-1"> {/* MODIFIED: text-md to text-sm, mb-2 to mb-1 */ }
-                <Icon name="phone" size={14} className="mr-2 text-gray-500" />
-                <a href={`tel:${person.phone}`} className="hover:text-blue-600 transition">{person.phone}</a>
-              </div>
-              <div className="flex items-center text-sm text-gray-700"> {/* MODIFIED: text-md to text-sm */ }
-                <Icon name="mail" size={14} className="mr-2 text-gray-500" />
-                <a href={`mailto:${person.email}`} className="hover:text-blue-600 transition">{person.email}</a>
+                <p className="text-sm font-medium text-gray-800">Reason: {app.reason}</p>
+                {app.status === 'scheduled' && <p className="text-sm text-blue-600 mt-1">Scheduled for: {app.scheduledDate} at {app.scheduledTime} with Dr. {app.doctorName}</p>}
+                {app.status === 'completed' && (
+                  <div className="mt-3 p-3 bg-white border border-green-100 rounded-lg">
+                    <p className="text-xs font-bold text-green-800 mb-1">Doctor's Notes & Prescription:</p>
+                    <p className="text-sm text-gray-700 whitespace-pre-wrap">{app.clinicalNotes}</p>
+                  </div>
+                )}
               </div>
             </div>
           ))}
@@ -655,412 +478,469 @@ const ContactPage = () => {
   );
 };
 
-/**
- * PAGE 5: Prediction Page (HEAVILY RE-ARCHITECTED)
- * This page now uses flexbox to fill the viewport.
- * The symptom lists and history scroll INTERNALLY.
- * The main page only scrolls AFTER prediction.
- */
-const PredictionPage = ({ db, auth, userId, authReady, appId }) => { // <-- Added appId prop
-  // Prediction States
+const AttenderDashboard = ({ db, appId }) => {
+  const [appointments, setAppointments] = useState([]);
+  const [doctors, setDoctors] = useState([]);
+  const [scheduleModal, setScheduleModal] = useState(null);
+  const [vitalsModal, setVitalsModal] = useState(null);
+
+  useEffect(() => {
+    if (!db || !appId) return;
+    const unsubApps = onSnapshot(collection(db, `artifacts/${appId}/appointments`), snap => {
+      setAppointments(snap.docs.map(d => ({id: d.id, ...d.data()})).sort((a,b) => a.timestamp - b.timestamp));
+    });
+    const unsubDocs = onSnapshot(collection(db, `artifacts/${appId}/all_users`), snap => {
+      setDoctors(snap.docs.map(d => ({id: d.id, ...d.data()})).filter(u => u.role === 'doctor' && u.status === 'approved'));
+    });
+    return () => { unsubApps(); unsubDocs(); };
+  }, [db, appId]);
+
+  const handleSchedule = async (e) => {
+    e.preventDefault();
+    const docInfo = doctors.find(d => d.id === e.target.doctorId.value);
+    await updateDoc(doc(db, `artifacts/${appId}/appointments`, scheduleModal.id), {
+      status: 'scheduled', doctorId: docInfo.id, doctorName: docInfo.name,
+      scheduledDate: e.target.date.value, scheduledTime: e.target.time.value
+    });
+    setScheduleModal(null);
+  };
+
+  const handleVitals = async (e) => {
+    e.preventDefault();
+    await updateDoc(doc(db, `artifacts/${appId}/appointments`, vitalsModal.id), {
+      status: 'ready',
+      vitals: { bp: e.target.bp.value, hr: e.target.hr.value, glucose: e.target.glucose.value }
+    });
+    setVitalsModal(null);
+  };
+
+  const requestedQueue = appointments.filter(a => a.status === 'requested');
+  const scheduledQueue = appointments.filter(a => a.status === 'scheduled');
+
+  return (
+    <div className="max-w-6xl mx-auto p-4 sm:p-8 space-y-8">
+      <div>
+        <h2 className="text-2xl font-bold text-blue-900 mb-4">Triage Queue (Requested)</h2>
+        <div className="bg-white shadow-sm border border-gray-200 rounded-2xl overflow-hidden">
+          <table className="min-w-full divide-y divide-gray-200">
+            <thead className="bg-gray-50"><tr><th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Patient</th><th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Reason</th><th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Action</th></tr></thead>
+            <tbody className="bg-white divide-y divide-gray-200">
+              {requestedQueue.map(app => (
+                <tr key={app.id}>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{app.patientName} <span className="text-gray-500 text-xs">({app.patientAge}y)</span></td>
+                  <td className="px-6 py-4 text-sm text-gray-500">{app.reason}</td>
+                  <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                    <button onClick={() => setScheduleModal(app)} className="text-blue-600 hover:text-blue-900 bg-blue-50 px-3 py-1 rounded-lg">Schedule</button>
+                  </td>
+                </tr>
+              ))}
+              {requestedQueue.length === 0 && <tr><td colSpan="3" className="px-6 py-4 text-center text-sm text-gray-500">Queue is empty</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div>
+        <h2 className="text-2xl font-bold text-blue-900 mb-4">Arrival Queue (Scheduled)</h2>
+        <div className="bg-white shadow-sm border border-gray-200 rounded-2xl overflow-hidden">
+          <table className="min-w-full divide-y divide-gray-200">
+            <thead className="bg-gray-50"><tr><th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Patient</th><th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Time/Doc</th><th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Action</th></tr></thead>
+            <tbody className="bg-white divide-y divide-gray-200">
+              {scheduledQueue.map(app => (
+                <tr key={app.id}>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{app.patientName}</td>
+                  <td className="px-6 py-4 text-sm text-gray-500">{app.scheduledDate} {app.scheduledTime} | Dr. {app.doctorName}</td>
+                  <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                    <button onClick={() => setVitalsModal(app)} className="text-purple-600 hover:text-purple-900 bg-purple-50 px-3 py-1 rounded-lg">Record Vitals</button>
+                  </td>
+                </tr>
+              ))}
+              {scheduledQueue.length === 0 && <tr><td colSpan="3" className="px-6 py-4 text-center text-sm text-gray-500">Queue is empty</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {scheduleModal && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-2xl p-6 w-full max-w-md shadow-2xl">
+            <h3 className="text-lg font-bold mb-4">Schedule: {scheduleModal.patientName}</h3>
+            <form onSubmit={handleSchedule} className="space-y-4">
+              <div><label className="block text-sm">Date</label><input required name="date" type="date" className="mt-1 w-full p-2 border rounded" /></div>
+              <div><label className="block text-sm">Time</label><input required name="time" type="time" className="mt-1 w-full p-2 border rounded" /></div>
+              <div><label className="block text-sm">Assign Doctor</label>
+                <select required name="doctorId" className="mt-1 w-full p-2 border rounded bg-white">
+                  {doctors.map(d => <option key={d.id} value={d.id}>Dr. {d.name}</option>)}
+                </select>
+              </div>
+              <div className="flex justify-end space-x-2 pt-2">
+                <button type="button" onClick={()=>setScheduleModal(null)} className="px-4 py-2 bg-gray-200 rounded">Cancel</button>
+                <button type="submit" className="px-4 py-2 bg-blue-600 text-white rounded">Confirm</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {vitalsModal && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-2xl p-6 w-full max-w-md shadow-2xl">
+            <h3 className="text-lg font-bold mb-4">Record Vitals: {vitalsModal.patientName}</h3>
+            <form onSubmit={handleVitals} className="space-y-4">
+              <div><label className="block text-sm">Blood Pressure (mmHg)</label><input required name="bp" placeholder="120/80" className="mt-1 w-full p-2 border rounded" /></div>
+              <div><label className="block text-sm">Heart Rate (bpm)</label><input required name="hr" type="number" placeholder="72" className="mt-1 w-full p-2 border rounded" /></div>
+              <div><label className="block text-sm">Glucose (mg/dL)</label><input required name="glucose" type="number" placeholder="90" className="mt-1 w-full p-2 border rounded" /></div>
+              <div className="flex justify-end space-x-2 pt-2">
+                <button type="button" onClick={()=>setVitalsModal(null)} className="px-4 py-2 bg-gray-200 rounded">Cancel</button>
+                <button type="submit" className="px-4 py-2 bg-purple-600 text-white rounded">Mark Ready</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+const DoctorDashboard = ({ db, userId, appId, mode = 'active' }) => {
+  const [appointments, setAppointments] = useState([]);
+  const [consultModal, setConsultModal] = useState(null);
+
+  useEffect(() => {
+    if (!db || !appId || !userId) return;
+    const unsubApps = onSnapshot(collection(db, `artifacts/${appId}/appointments`), snap => {
+      const all = snap.docs.map(d => ({id: d.id, ...d.data()})).filter(a => a.doctorId === userId);
+      setAppointments(all.sort((a,b) => b.timestamp - a.timestamp));
+    });
+    return () => unsubApps();
+  }, [db, appId, userId]);
+
+  const handleComplete = async (e) => {
+    e.preventDefault();
+    await updateDoc(doc(db, `artifacts/${appId}/appointments`, consultModal.id), {
+      status: 'completed',
+      clinicalNotes: e.target.notes.value
+    });
+    setConsultModal(null);
+  };
+
+  const displayApps = appointments.filter(a => mode === 'active' ? a.status === 'ready' : a.status === 'completed');
+
+  return (
+    <div className="max-w-5xl mx-auto p-4 sm:p-8 space-y-6">
+      <h2 className="text-2xl font-bold text-blue-900">{mode === 'active' ? 'Patients Ready for Consult' : 'Consultation History'}</h2>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        {displayApps.map(app => (
+          <div key={app.id} className="bg-white p-5 rounded-2xl shadow-sm border border-gray-200">
+            <div className="flex justify-between items-start mb-2">
+              <h3 className="text-lg font-bold text-gray-900">{app.patientName} <span className="text-sm font-normal text-gray-500">({app.patientAge}y)</span></h3>
+              <span className={`text-xs px-2 py-1 rounded ${mode==='active'?'bg-purple-100 text-purple-800':'bg-green-100 text-green-800'}`}>{app.status.toUpperCase()}</span>
+            </div>
+            <p className="text-sm text-gray-600 mb-3"><strong>Reason:</strong> {app.reason}</p>
+            {app.vitals && (
+              <div className="bg-gray-50 p-3 rounded-lg flex space-x-4 text-sm mb-4">
+                <span><strong>BP:</strong> {app.vitals.bp}</span>
+                <span><strong>HR:</strong> {app.vitals.hr}</span>
+                <span><strong>Gluc:</strong> {app.vitals.glucose}</span>
+              </div>
+            )}
+            {mode === 'active' ? (
+               <button onClick={()=>setConsultModal(app)} className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 rounded-xl transition">Start Consult</button>
+            ) : (
+               <div className="text-sm bg-blue-50 text-blue-900 p-3 rounded-lg"><p className="font-bold">Notes:</p>{app.clinicalNotes}</div>
+            )}
+          </div>
+        ))}
+        {displayApps.length === 0 && <p className="text-gray-500">No patients found.</p>}
+      </div>
+
+      {consultModal && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-2xl p-6 w-full max-w-2xl shadow-2xl flex flex-col h-[80vh]">
+            <h3 className="text-xl font-bold mb-4">Consultation: {consultModal.patientName}</h3>
+            <div className="bg-gray-50 p-4 rounded-lg mb-4 text-sm flex-shrink-0">
+              <p><strong>Reason:</strong> {consultModal.reason}</p>
+              <div className="flex space-x-4 mt-2">
+                <span><strong>BP:</strong> {consultModal.vitals?.bp}</span>
+                <span><strong>HR:</strong> {consultModal.vitals?.hr}</span>
+                <span><strong>Gluc:</strong> {consultModal.vitals?.glucose}</span>
+              </div>
+            </div>
+            <form onSubmit={handleComplete} className="flex-grow flex flex-col">
+              <label className="block text-sm font-bold mb-1">Clinical Notes & Prescriptions</label>
+              <textarea required name="notes" className="flex-grow w-full p-3 border rounded-xl resize-none focus:ring-blue-500 mb-4" placeholder="Enter findings and prescribed medications..." />
+              <div className="flex justify-end space-x-2 flex-shrink-0">
+                <button type="button" onClick={()=>setConsultModal(null)} className="px-6 py-2 bg-gray-200 rounded-xl font-bold">Cancel</button>
+                <button type="submit" className="px-6 py-2 bg-green-600 hover:bg-green-700 text-white rounded-xl font-bold transition">Complete Consult</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+const AdminDashboard = ({ db, appId }) => {
+  const [users, setUsers] = useState([]);
+  const [appointments, setAppointments] = useState([]);
+  const [activeTab, setActiveTab] = useState('stats'); // stats, approvals, directory, logs
+
+  useEffect(() => {
+    if (!db || !appId) return;
+    const unsubUsers = onSnapshot(collection(db, `artifacts/${appId}/all_users`), snap => setUsers(snap.docs.map(d=>({id:d.id, ...d.data()}))));
+    const unsubApps = onSnapshot(collection(db, `artifacts/${appId}/appointments`), snap => setAppointments(snap.docs.map(d=>({id:d.id, ...d.data()}))));
+    return () => { unsubUsers(); unsubApps(); };
+  }, [db, appId]);
+
+  const handleApprove = async (uid) => {
+    await updateDoc(doc(db, `artifacts/${appId}/all_users`, uid), { status: 'approved' });
+    await updateDoc(doc(db, `artifacts/${appId}/users/${uid}/profile`, 'data'), { status: 'approved' });
+  };
+
+  const pendingUsers = users.filter(u => u.status === 'pending');
+  const sortedApps = [...appointments].sort((a,b) => b.timestamp - a.timestamp);
+
+  const tabs = [
+    { id: 'stats', label: 'Dashboard Stats' },
+    { id: 'approvals', label: `Approvals (${pendingUsers.length})` },
+    { id: 'directory', label: 'User Directory' },
+    { id: 'logs', label: 'System Logs' },
+  ];
+
+  return (
+    <div className="max-w-7xl mx-auto p-4 sm:p-8 flex flex-col h-full">
+      <h2 className="text-3xl font-extrabold text-blue-900 mb-6 flex-shrink-0">Admin Control Center</h2>
+      
+      <div className="flex space-x-2 border-b border-gray-200 mb-6 flex-shrink-0 overflow-x-auto">
+        {tabs.map(t => (
+          <button key={t.id} onClick={()=>setActiveTab(t.id)} className={`px-4 py-2 font-medium whitespace-nowrap border-b-2 transition ${activeTab === t.id ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700'}`}>
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      <div className="flex-grow overflow-y-auto pr-2 pb-8">
+        {activeTab === 'stats' && (
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+            <div className="bg-white p-6 rounded-2xl shadow-sm border border-blue-100 text-center"><p className="text-gray-500 text-sm">Total Users</p><p className="text-3xl font-bold text-blue-600">{users.length}</p></div>
+            <div className="bg-white p-6 rounded-2xl shadow-sm border border-green-100 text-center"><p className="text-gray-500 text-sm">Active Doctors</p><p className="text-3xl font-bold text-green-600">{users.filter(u=>u.role==='doctor' && u.status==='approved').length}</p></div>
+            <div className="bg-white p-6 rounded-2xl shadow-sm border border-purple-100 text-center"><p className="text-gray-500 text-sm">Total Consults</p><p className="text-3xl font-bold text-purple-600">{appointments.length}</p></div>
+            <div className="bg-white p-6 rounded-2xl shadow-sm border border-yellow-100 text-center"><p className="text-gray-500 text-sm">Pending Staff</p><p className="text-3xl font-bold text-yellow-600">{pendingUsers.length}</p></div>
+          </div>
+        )}
+
+        {activeTab === 'approvals' && (
+          <div className="bg-white shadow-sm border border-gray-200 rounded-2xl overflow-hidden">
+            <table className="min-w-full divide-y divide-gray-200">
+              <thead className="bg-gray-50"><tr><th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Name</th><th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Role</th><th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Email</th><th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">Action</th></tr></thead>
+              <tbody className="divide-y divide-gray-200">
+                {pendingUsers.map(u => (
+                  <tr key={u.id}><td className="px-6 py-4 text-sm font-medium">{u.name}</td><td className="px-6 py-4 text-sm uppercase">{u.role}</td><td className="px-6 py-4 text-sm text-gray-500">{u.email}</td><td className="px-6 py-4 text-right"><button onClick={()=>handleApprove(u.id)} className="bg-green-500 text-white px-4 py-1 rounded-lg hover:bg-green-600 text-sm font-bold">Approve</button></td></tr>
+                ))}
+                {pendingUsers.length === 0 && <tr><td colSpan="4" className="px-6 py-4 text-center text-sm text-gray-500">No pending approvals.</td></tr>}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {activeTab === 'directory' && (
+          <div className="bg-white shadow-sm border border-gray-200 rounded-2xl overflow-hidden">
+            <table className="min-w-full divide-y divide-gray-200">
+              <thead className="bg-gray-50"><tr><th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Name/Email</th><th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Role</th><th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Demographics</th><th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th></tr></thead>
+              <tbody className="divide-y divide-gray-200">
+                {users.map(u => (
+                  <tr key={u.id}><td className="px-6 py-4"><div className="text-sm font-medium">{u.name}</div><div className="text-xs text-gray-500">{u.email}</div></td><td className="px-6 py-4 text-sm uppercase">{u.role}</td><td className="px-6 py-4 text-sm">{u.age ? `${u.age}y` : 'N/A'}, {u.gender || 'N/A'}</td><td className="px-6 py-4 text-sm"><span className={`px-2 py-1 rounded text-xs ${u.status==='approved'?'bg-green-100 text-green-800':'bg-yellow-100 text-yellow-800'}`}>{u.status}</span></td></tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {activeTab === 'logs' && (
+          <div className="space-y-3">
+            {sortedApps.map(app => (
+              <div key={app.id} className="bg-white p-3 border border-gray-200 rounded-lg shadow-sm text-sm flex flex-col sm:flex-row justify-between">
+                <div><span className="font-bold text-gray-700">{new Date(app.timestamp).toLocaleString()}:</span> Patient <span className="font-semibold">{app.patientName}</span> requested consult.</div>
+                <div className="font-medium text-blue-600 uppercase">[{app.status}]</div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+
+// =================================================================================
+// --- EXISTING PAGES (Adapted to RBAC & Flex Flow) ---
+// =================================================================================
+
+const HomePage = ({ onNavigate }) => (
+  <div className="h-full flex flex-col items-center justify-center relative bg-gradient-to-r from-blue-500 to-cyan-500 p-4 sm:p-8">
+    <div className="z-10 text-center text-white p-4 max-w-4xl">
+      <h1 className="text-4xl md:text-6xl font-extrabold mb-4 drop-shadow-lg tracking-tight animate-[fadeInUp_0.6s_ease-out_forwards]">Welcome to Vaidya Mithra HMIS</h1>
+      <p className="text-lg md:text-xl mb-8 font-light drop-shadow-md animate-[fadeInUp_0.8s_ease-out_forwards]">Comprehensive enterprise health management & AI insights.</p>
+      <a href="#" onClick={(e) => { e.preventDefault(); onNavigate('appointments'); }} className="inline-flex items-center px-8 py-3 bg-green-500 text-white text-lg font-semibold rounded-full shadow-xl hover:bg-green-600 transition transform hover:scale-105 animate-[fadeInUp_1s_ease-out_forwards]">
+        My Appointments <Icon name="chevronRight" size={24} className="ml-2" color="white" />
+      </a>
+    </div>
+  </div>
+);
+
+const HospitalPage = () => {
+  const [status, setStatus] = useState('ready');
+
+  const findHospitals = () => {
+    if (!navigator.geolocation) return setStatus('error');
+    setStatus('loading');
+    navigator.geolocation.getCurrentPosition(
+      (pos) => { setStatus('found'); window.open(`https://www.google.com/maps/search/?api=1&query=hospitals+near+$${pos.coords.latitude},${pos.coords.longitude}`, '_blank'); },
+      () => setStatus('error'),
+      { enableHighAccuracy: true, timeout: 5000, maximumAge: 0 }
+    );
+  };
+
+  return (
+    <div className="h-full flex items-center justify-center p-4">
+      <div className="bg-white/80 backdrop-blur-lg shadow-2xl rounded-2xl p-6 sm:p-8 border border-gray-200 max-w-2xl w-full">
+        <h2 className="text-3xl font-extrabold text-blue-800 mb-6 flex items-center"><Icon name="hospital" size={30} className="mr-3 text-blue-500" /> Nearby Facilities</h2>
+        <button onClick={findHospitals} disabled={status === 'loading'} className="w-full bg-green-500 hover:bg-green-600 text-white font-bold py-3 rounded-xl transition disabled:opacity-50 flex items-center justify-center">
+          {status === 'loading' ? 'Locating...' : 'Find Hospitals Now'}
+        </button>
+      </div>
+    </div>
+  );
+};
+
+const DocBotPage = ({ db, userId, authReady, appId }) => {
+  const [chatHistory, setChatHistory] = useState([]);
+  const [currentMessage, setCurrentMessage] = useState('');
+  const [isTyping, setIsTyping] = useState(false);
+  const messagesEndRef = useRef(null);
+
+  useEffect(() => {
+    if (!authReady || !userId || !db || !appId) return;
+    const q = query(collection(db, `artifacts/${appId}/users/${userId}/docbot_chat`), orderBy('timestamp', 'asc'), limit(50));
+    return onSnapshot(q, snap => setChatHistory(snap.docs.map(d => ({...d.data(), id: d.id }))));
+  }, [db, userId, authReady, appId]);
+
+  useEffect(() => messagesEndRef.current?.scrollIntoView({ behavior: "smooth" }), [chatHistory]);
+
+  const handleSend = async (messageText) => {
+    const message = (typeof messageText === 'string') ? messageText : currentMessage;
+    if (!message.trim() || isTyping || !db || !userId || !appId) return;
+    setCurrentMessage('');
+    setIsTyping(true);
+
+    const chatRef = collection(db, `artifacts/${appId}/users/${userId}/docbot_chat`);
+    await setDoc(doc(chatRef), { text: message.trim(), role: 'user', timestamp: serverTimestamp() });
+
+    try {
+      const apiHistory = chatHistory.map(msg => ({ role: msg.role === 'ai' ? 'model' : 'user', parts: [{ text: msg.text }] }));
+      apiHistory.push({ role: 'user', parts: [{ text: message.trim() }] });
+      const payload = { contents: apiHistory, systemInstruction: { parts: [{ text: "You are DocBot..." }] } };
+      const res = await fetch(GEMINI_API_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+      const result = await res.json();
+      const aiText = result.candidates?.[0]?.content?.parts?.[0]?.text || "Error processing request.";
+      await setDoc(doc(chatRef), { text: aiText, role: 'ai', timestamp: serverTimestamp() });
+    } catch (e) {
+      await setDoc(doc(chatRef), { text: "Error connecting to AI.", role: 'ai_error', timestamp: serverTimestamp() });
+    } finally {
+      setIsTyping(false);
+    }
+  };
+
+  return (
+    <div className="h-full p-4 sm:p-8 flex flex-col">
+      <div className="bg-white/80 backdrop-blur-lg shadow-xl rounded-2xl p-4 sm:p-8 border border-gray-200 flex flex-col flex-grow h-full overflow-hidden">
+        <h2 className="text-3xl font-extrabold text-blue-800 mb-6 flex-shrink-0 flex items-center"><Icon name="messageSquare" size={30} className="mr-3 text-green-500" /> DocBot</h2>
+        <div className="flex-grow overflow-y-auto p-4 mb-4 bg-gray-50 rounded-lg border border-gray-200 flex flex-col space-y-3">
+          {chatHistory.length === 0 ? <p className="text-center text-gray-500 m-auto">Hello! Ask me any general health questions.</p> : chatHistory.map(msg => (
+            <div key={msg.id} className={`max-w-xs sm:max-w-md p-3 rounded-xl shadow-md ${msg.role === 'user' ? 'bg-blue-500 text-white self-end rounded-br-none' : 'bg-white text-gray-800 self-start rounded-tl-none border'}`}>{msg.text}</div>
+          ))}
+          {isTyping && <div className="self-start p-3 bg-gray-200 rounded-xl rounded-tl-none animate-pulse w-16 h-8" />}
+          <div ref={messagesEndRef} />
+        </div>
+        <div className="flex space-x-2 flex-shrink-0">
+          <input type="text" value={currentMessage} onChange={e=>setCurrentMessage(e.target.value)} onKeyDown={e=>e.key==='Enter'&&handleSend()} className="flex-grow p-3 border border-gray-300 rounded-xl" placeholder="Ask DocBot..." />
+          <button onClick={()=>handleSend()} className="bg-blue-600 text-white px-4 rounded-xl"><Icon name="send" size={20} /></button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const ContactPage = () => (
+  <div className="h-full flex p-4 sm:p-6 items-center justify-center">
+    <div className="bg-white/90 backdrop-blur-lg shadow-xl rounded-2xl p-8 border border-gray-200 max-w-4xl w-full text-center">
+      <h2 className="text-3xl font-extrabold text-blue-800 mb-4 flex items-center justify-center"><Icon name="mail" size={30} className="mr-3 text-blue-500" /> HMIS Support</h2>
+      <p className="text-gray-600 mb-8">System developed & maintained by:</p>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6 text-left">
+        <div className="bg-gray-50 border p-5 rounded-xl"><p className="font-bold text-lg text-blue-800 mb-2">Dilip Kumar A N</p><p className="text-sm">7259447817<br/>dilipkumaran.ec23@rvce.edu.in</p></div>
+        <div className="bg-gray-50 border p-5 rounded-xl"><p className="font-bold text-lg text-blue-800 mb-2">Arya B V</p><p className="text-sm">8050141198<br/>aryabv.ec23@rvce.edu.in</p></div>
+      </div>
+    </div>
+  </div>
+);
+
+const PredictionPage = ({ db, userId, authReady, appId }) => {
   const [selectedSymptoms, setSelectedSymptoms] = useState([]);
-  const [age, setAge] = useState(30);
-  const [gender, setGender] = useState('Male');
   const [predictionResult, setPredictionResult] = useState(null);
   const [isLoading, setIsLoading] = useState(false);
   const [activeCategory, setActiveCategory] = useState(SYMPTOM_CATEGORIES[0]);
   const [searchQuery, setSearchQuery] = useState('');
-  const [history, setHistory] = useState([]);
 
-  // --- HISTORY LISTENER ---
-  useEffect(() => {
-    // MODIFIED: Uses new appId prop and checks authReady
-    if (!authReady || !userId || !db || !appId) return;
-
+  const handlePrediction = async () => {
+    if (!selectedSymptoms.length) return;
+    setIsLoading(true); setPredictionResult(null);
     try {
-      // MODIFIED: Uses appId prop to build path
-      const historyCollectionRef = collection(db, `artifacts/${appId}/users/${userId}/symptom_history`);
-      const q = query(historyCollectionRef, orderBy('timestamp', 'desc'), limit(5));
-
-      const unsubscribe = onSnapshot(q, (snapshot) => {
-        setHistory(snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id })));
-      }, (error) => {
-        console.error("Error fetching history:", error);
+      const prompt = `Symptoms: ${selectedSymptoms.join(', ')}. Return JSON format strictly.`;
+      const res = await fetch(GEMINI_API_URL, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { responseMimeType: "application/json", responseSchema: JSON_SCHEMA } })
       });
-
-      return () => unsubscribe();
+      const result = await res.json();
+      setPredictionResult(JSON.parse(result.candidates[0].content.parts[0].text));
     } catch (e) {
-      console.error("Firestore History Listener Failed:", e);
-    }
-  }, [db, userId, authReady, appId]); // <-- Added appId dependency
-
-  // Exponential Backoff Fetch Utility
-  const fetchWithBackoff = useCallback(async (url, options, retries = 3, delay = 1000) => {
-    for (let i = 0; i < retries; i++) {
-      try {
-        const response = await fetch(url, options);
-        if (response.ok) {
-          return response;
-        } else if (response.status === 429 && i < retries - 1) {
-          await new Promise(resolve => setTimeout(resolve, delay));
-          delay *= 2; // Exponential backoff
-          continue;
-        } else {
-          throw new Error(`API returned status ${response.status}`);
-        }
-      } catch (error) {
-        if (i === retries - 1) throw error;
-        await new Promise(resolve => setTimeout(resolve, delay));
-        delay *= 2;
-      }
-    }
-  }, []);
-
-  // --- PREDICTION LOGIC ---
-  const handlePrediction = useCallback(async () => {
-    if (selectedSymptoms.length === 0) {
-      setPredictionResult(null);
-      return;
-    }
-
-    setIsLoading(true);
-    setPredictionResult(null); // Clear previous results
-
-    // Scroll to results after a short delay to allow UI to update
-    setTimeout(() => {
-        const resultsEl = document.getElementById('prediction-results');
-        resultsEl?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    }, 100);
-
-    const userQuery = `The patient is a ${age} year old ${gender}. They are currently experiencing the following symptoms: ${selectedSymptoms.join(', ')}. Please act as a professional medical analyst and provide the top 3 most likely differential diagnoses, a confidence score (0.0 to 1.0) for each, and non-alarming, concise next steps/advice. Focus strictly on the JSON output format.`;
-
-    try {
-      const payload = {
-        contents: [{ parts: [{ text: userQuery }] }],
-        generationConfig: {
-          responseMimeType: "application/json",
-          responseSchema: JSON_SCHEMA,
-        },
-      };
-
-      const response = await fetchWithBackoff(GEMINI_API_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
-
-      const result = await response.json();
-      const jsonString = result.candidates?.[0]?.content?.parts?.[0]?.text;
-      
-      if (!jsonString) {
-        throw new Error("Invalid response format from AI.");
-      }
-
-      const parsedResult = JSON.parse(jsonString);
-      setPredictionResult(parsedResult);
-      
-      // Save query to Firestore if initialized
-      // MODIFIED: Uses new appId prop
-      if (db && userId && appId) {
-        // MODIFIED: Uses appId prop to build path
-        const historyCollectionRef = collection(db, `artifacts/${appId}/users/${userId}/symptom_history`);
-        await setDoc(doc(historyCollectionRef), {
-          symptoms: selectedSymptoms,
-          age: age,
-          gender: gender,
-          result: parsedResult,
-          timestamp: serverTimestamp(),
-        });
-      }
-    } catch (error) {
-      console.error("Prediction failed:", error);
-      setPredictionResult({ error: `Could not retrieve AI prediction. ${error.message}` });
+      setPredictionResult({ error: "Failed to fetch." });
     } finally {
       setIsLoading(false);
     }
-  }, [selectedSymptoms, age, gender, db, userId, appId, fetchWithBackoff]); // <-- Added appId dependency
-
-  // --- Symptom Management ---
-  const toggleSymptom = (symptom) => {
-    setSelectedSymptoms(prev =>
-      prev.includes(symptom)
-        ? prev.filter(s => s !== symptom)
-        : [...prev, symptom]
-    );
   };
 
-  const clearSymptoms = () => setSelectedSymptoms([]);
+  const filtered = (searchQuery ? SYMPTOM_CATEGORIES.flatMap(c=>ALL_SYMPTOMS_CATEGORIZED[c]) : ALL_SYMPTOMS_CATEGORIZED[activeCategory]).filter(s=>s.toLowerCase().includes(searchQuery.toLowerCase()));
 
-  const filteredSymptoms = useMemo(() => {
-    let symptoms = searchQuery 
-      ? SYMPTOM_CATEGORIES.flatMap(cat => ALL_SYMPTOMS_CATEGORIZED[cat])
-      : ALL_SYMPTOMS_CATEGORIZED[activeCategory] || [];
-
-    const lowerCaseQuery = searchQuery.toLowerCase();
-
-    return symptoms
-      .filter(s => s.toLowerCase().includes(lowerCaseQuery))
-      .sort((a, b) => a.localeCompare(b));
-  }, [activeCategory, searchQuery]);
-
-  const isEmergency = predictionResult?.emergency_flag || selectedSymptoms.some(s => s.toLowerCase().includes('chest pain') || s.toLowerCase().includes('difficulty breathing'));
-
-  // --- UI Components ---
   return (
-    // This container fills the page and organizes content vertically
-    <div id="prediction-page" className="h-full flex flex-col p-4 sm:p-8">
-      
-      {/* SECTION 1: Header */}
-      <div 
-        className="flex-shrink-0 opacity-0"
-        style={{ animation: 'fadeIn 0.5s 0.1s ease-out forwards' }}
-      >
-        <h2 className="text-4xl font-extrabold text-blue-800 mb-2">Symptom Assessment</h2>
-        <p className="text-gray-500 mb-4">Select symptoms to get an initial, non-diagnostic AI assessment.</p>
-      </div>
-
-      {/* SECTION 2: Profile (Compact) */}
-      <div 
-        className="flex-shrink-0 p-4 bg-white/80 backdrop-blur-lg shadow-lg rounded-2xl border border-gray-200/50 mb-4 opacity-0"
-        style={{ animation: 'fadeInUp 0.5s 0.2s ease-out forwards' }}
-      >
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-          <label className="block">
-            <span className="text-sm font-medium text-gray-600">Age:</span>
-            <input
-              type="number"
-              value={age}
-              onChange={(e) => setAge(Math.max(1, parseInt(e.target.value) || 1))}
-              min="1"
-              className="mt-1 w-full p-2 border border-gray-300 rounded-xl focus:ring-blue-500 focus:border-blue-500"
-            />
-          </label>
-          <label className="block">
-            <span className="text-sm font-medium text-gray-600">Gender:</span>
-            <select
-              value={gender}
-              onChange={(e) => setGender(e.target.value)}
-              className="mt-1 w-full p-2 border border-gray-300 rounded-xl focus:ring-blue-500 focus:border-blue-500 bg-white"
-            >
-              <option value="Male">Male</option>
-              <option value="Female">Female</option>
-              <option value="Other">Other</option>
-            </select>
-          </label>
-          <label className="block sm:col-span-1">
-             <span className="text-sm font-medium text-gray-600">Search Symptoms:</span>
-            <input
-              type="text"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="e.g., pain, fever..."
-              className="mt-1 w-full p-2 border border-gray-300 rounded-xl focus:ring-blue-500 focus:border-blue-500"
-            />
-          </label>
+    <div className="max-w-6xl mx-auto p-4 sm:p-8 flex flex-col space-y-6">
+      <h2 className="text-3xl font-extrabold text-blue-800">AI Triage Assessment</h2>
+      <div className="flex flex-col lg:flex-row gap-6">
+        <div className="lg:w-1/2 bg-white p-5 rounded-2xl shadow-sm border border-gray-200 flex flex-col max-h-[60vh]">
+           <div className="flex space-x-2 overflow-x-auto pb-2 border-b flex-shrink-0">
+             {SYMPTOM_CATEGORIES.map(c => <button key={c} onClick={()=>{setActiveCategory(c); setSearchQuery('');}} className={`px-4 py-1 rounded-full text-sm ${activeCategory===c ? 'bg-blue-600 text-white':'bg-gray-100'}`}>{c}</button>)}
+           </div>
+           <input placeholder="Search symptoms..." value={searchQuery} onChange={e=>setSearchQuery(e.target.value)} className="mt-3 p-2 border rounded-xl w-full flex-shrink-0" />
+           <div className="flex-grow overflow-y-auto mt-3 grid grid-cols-2 gap-2">
+             {filtered.map(s => <button key={s} onClick={()=>setSelectedSymptoms(p=>p.includes(s)?p.filter(x=>x!==s):[...p, s])} className={`p-2 text-sm rounded border text-left ${selectedSymptoms.includes(s)?'bg-green-500 text-white':'bg-gray-50'}`}>{s}</button>)}
+           </div>
         </div>
-      </div>
-
-      {/* SECTION 3: Main Content (Grows and scrolls internally) */}
-      <div 
-        className="flex-grow flex flex-col lg:flex-row gap-4 opacity-0" // REMOVED min-h-[400px]
-        style={{ animation: 'fadeInUp 0.5s 0.3s ease-out forwards' }}
-      >
-        
-        {/* Left Column: Symptom Selection */}
-        <div className="lg:w-1/2 flex flex-col bg-white/80 backdrop-blur-lg shadow-lg rounded-2xl border border-gray-200/50 p-4">
-          <h3 className="text-xl font-semibold text-blue-800 mb-3 flex-shrink-0">Select Symptoms</h3>
+        <div className="lg:w-1/2 bg-white p-5 rounded-2xl shadow-sm border border-gray-200">
+          <h3 className="text-lg font-bold mb-3">Selected ({selectedSymptoms.length})</h3>
+          <div className="flex flex-wrap gap-2 mb-6">{selectedSymptoms.map(s => <span key={s} className="px-3 py-1 bg-blue-100 text-blue-800 rounded-full text-sm">{s}</span>)}</div>
+          <button onClick={handlePrediction} disabled={!selectedSymptoms.length || isLoading} className="w-full bg-blue-600 text-white font-bold py-3 rounded-xl disabled:opacity-50">{isLoading ? 'Analyzing...' : 'Get Prediction'}</button>
           
-          <div className="flex space-x-2 overflow-x-auto pb-2 border-b border-gray-200 flex-shrink-0">
-            {SYMPTOM_CATEGORIES.map(cat => (
-              <button
-                key={cat}
-                onClick={() => { setActiveCategory(cat); setSearchQuery(''); }}
-                className={`px-4 py-2 rounded-full text-sm font-medium transition duration-150 whitespace-nowrap ${
-                  activeCategory === cat && !searchQuery
-                    ? 'bg-blue-600 text-white shadow-md'
-                    : 'bg-gray-100 text-gray-700 hover:bg-blue-100'
-                }`}
-              >
-                {cat}
-              </button>
-            ))}
-          </div>
-
-          {/* This grid is now the internally scrolling part */}
-          <div className="flex-grow overflow-y-auto pr-2 pt-3 grid grid-cols-2 md:grid-cols-3 gap-3">
-            {filteredSymptoms.length > 0 ? filteredSymptoms.map(symptom => {
-              const isSelected = selectedSymptoms.includes(symptom);
-              return (
-                <button
-                  key={symptom}
-                  onClick={() => toggleSymptom(symptom)}
-                  className={`p-3 text-sm h-fit rounded-xl text-left shadow-sm transform transition-all duration-200 ${
-                    isSelected
-                      ? 'bg-green-500 text-white font-semibold ring-2 ring-green-400 hover:scale-105'
-                      : 'bg-gray-50/80 text-gray-700 hover:bg-blue-50 border border-gray-200/50 hover:scale-105'
-                  }`}
-                >
-                  {symptom}
-                </button>
-              );
-            }) : (
-              <p className="text-gray-500 italic p-4 col-span-full text-center">No symptoms match your search.</p>
-            )}
-          </div>
+          {predictionResult && !predictionResult.error && (
+            <div className="mt-6 space-y-4">
+               {predictionResult.predictions.map((p,i) => (
+                 <div key={i} className="p-4 bg-green-50 border border-green-200 rounded-xl">
+                   <div className="flex justify-between font-bold text-green-900 mb-1"><span>{p.disease}</span><span>{Math.round(p.confidence*100)}%</span></div>
+                   <p className="text-sm text-gray-700">{p.description}</p>
+                 </div>
+               ))}
+            </div>
+          )}
         </div>
-
-        {/* Right Column: Selected & History */}
-        <div className="lg:w-1/2 flex flex-col bg-white/80 backdrop-blur-lg shadow-lg rounded-2xl border border-gray-200/50 p-4">
-          {/* Selected Symptoms */}
-          <div className="flex-shrink-0">
-            <h3 className="text-xl font-semibold text-blue-800 mb-3">Selected ({selectedSymptoms.length})</h3>
-            <div className="flex flex-wrap gap-2 min-h-[6rem] max-h-[150px] overflow-y-auto border border-dashed border-gray-300 rounded-lg p-3">
-              {selectedSymptoms.length === 0 ? (
-                <p className="text-gray-400 italic m-auto">Start selecting symptoms from the left...</p>
-              ) : (
-                selectedSymptoms.map(symptom => (
-                  <div key={symptom} className="flex h-fit items-center bg-blue-100 text-blue-800 text-xs font-medium px-3 py-1 rounded-full shadow-sm transform transition-all duration-200 hover:scale-105">
-                    {symptom}
-                    <button onClick={() => toggleSymptom(symptom)} className="ml-2 text-blue-600 hover:text-red-500 transition">
-                      <Icon name="x" size={14} />
-                    </button>
-                  </div>
-                ))
-              )}
-            </div>
-          </div>
-          
-          {/* Action Buttons */}
-          <div className="flex-shrink-0 flex justify-end space-x-3 mt-4">
-              <button
-                onClick={clearSymptoms}
-                disabled={selectedSymptoms.length === 0 || isLoading}
-                className="px-4 py-2 text-sm text-gray-600 bg-gray-200 hover:bg-gray-300 rounded-xl transition-all duration-150 disabled:opacity-50 transform hover:scale-105"
-              >
-                Clear All
-              </button>
-              <button
-                onClick={handlePrediction}
-                disabled={selectedSymptoms.length === 0 || isLoading || !authReady}
-                className="px-6 py-3 text-white font-bold bg-blue-600 hover:bg-blue-700 rounded-xl transition-all duration-150 shadow-md disabled:opacity-50 flex items-center justify-center transform hover:scale-105"
-              >
-                {isLoading ? (
-                  <>
-                    <svg className="animate-spin -ml-1 mr-3 h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
-                    Analyzing...
-                  </>
-                ) : (
-                  'Get AI Prediction'
-                )}
-              </button>
-            </div>
-        </div>
-      </div>
-      
-      {/* SECTION 4: Actions (Fixed at bottom of viewport content) -> THIS IS MOVED */}
-      {/* --- This section was moved up --- */}
-
-
-      {/* SECTION 5: Results (This part makes the page scrollable, as requested) */}
-      <div id="prediction-results" className="mt-6">
-        {/* Skeleton Loaders */}
-        {isLoading && (
-          <div className="space-y-4 w-full"> {/* MODIFIED: Removed max-w-2xl mx-auto */ }
-            <SkeletonCard />
-            <SkeletonCard />
-            <SkeletonCard />
-          </div>
-        )}
-        
-        {/* Emergency Warning */}
-        {isEmergency && !isLoading && (
-          <div className="bg-red-50 border border-red-200 p-4 rounded-xl mb-4 flex items-start text-red-800 w-full"> {/* MODIFIED: Removed max-w-2xl mx-auto */ }
-            <Icon name="alertTriangle" size={24} className="mt-1 flex-shrink-0" color="#ef4444" />
-            <div className="ml-3">
-              <h4 className="font-bold text-lg">EMERGENCY WARNING!</h4>
-              <p className="text-sm">Based on one or more selected symptoms, **seek professional medical help immediately.** This AI tool cannot provide life-saving assistance.</p>
-            </div>
-          </div>
-        )}
-        
-        {/* Results */}
-        {predictionResult && !isLoading && !predictionResult.error && (
-          <div className="space-y-4 w-full"> {/* MODIFIED: Removed max-w-2xl mx-auto */ }
-             <h3 className="text-2xl font-bold text-blue-800 mb-4">AI Assessment</h3>
-            {predictionResult.predictions.map((p, index) => {
-              const confidencePercent = Math.round(p.confidence * 100);
-              let barColor = 'bg-red-400';
-              if (confidencePercent > 70) barColor = 'bg-green-500';
-              else if (confidencePercent > 40) barColor = 'bg-yellow-500';
-
-              return (
-                <div key={index} className="p-4 rounded-xl border shadow-sm" style={{borderColor: '#bbf7d0', backgroundColor: '#f0fdf4'}}>
-                  <div className="flex justify-between items-center mb-2">
-                    <h4 className="font-bold text-lg text-green-700">{p.disease}</h4>
-                    <span className="text-sm font-semibold text-gray-700">
-                      {confidencePercent}%
-                    </span>
-                  </div>
-                  
-                  {/* Confidence Bar */}
-                  <div className="w-full bg-gray-200 rounded-full h-2.5 mb-3">
-                    <div
-                      className={`h-2.5 rounded-full ${barColor} transition-all duration-500`}
-                      style={{ width: `${confidencePercent}%` }}
-                    ></div>
-                  </div>
-
-                  <p className="text-sm text-gray-700">{p.description}</p>
-                </div>
-              );
-            })}
-          </div>
-        )}
-        
-        {/* Error Message */}
-        {predictionResult?.error && !isLoading && (
-          <div className="p-4 bg-red-100 border border-red-400 rounded-xl text-red-800 w-full"> {/* MODIFIED: Removed max-w-2xl mx-auto */ }
-            <p className="font-semibold">Error:</p>
-            <p className="text-sm">{predictionResult.error}</p>
-          </div>
-        )}
-      </div>
-
-      {/* SECTION 6: Recent History (NEWLY MOVED HERE) */}
-      <div 
-        className="flex-shrink-0 p-4 bg-white/80 backdrop-blur-lg shadow-lg rounded-2xl border border-gray-200/50 mt-6 w-full opacity-0" /* MODIFIED: Removed max-w-2xl mx-auto */
-        style={{ animation: 'fadeInUp 0.5s 0.5s ease-out forwards' }}
-      >
-        <h3 className="text-xl font-semibold text-blue-800 mb-4 flex items-center">
-          <Icon name="history" size={20} className="mr-2 text-blue-500" />
-          Recent History
-        </h3>
-        {authReady ? (
-          <>
-            <p className="text-gray-500 text-xs mb-3">Last 5 checks (User ID: {userId ? `${userId.substring(0, 8)}...` : 'N/A'}):</p>
-            <div className="space-y-3 max-h-[200px] overflow-y-auto pr-2">
-              {history.length === 0 ? (
-                <p className="text-gray-400 italic text-sm">No recent checks found.</p>
-              ) : (
-                history.map(item => (
-                  <div key={item.id} className="p-3 bg-gray-50/80 rounded-lg border border-gray-200 shadow-sm transition duration-200 hover:shadow-md">
-                    <p className="text-xs font-semibold text-gray-800">{new Date(item.timestamp?.seconds * 1000).toLocaleString()}</p>
-                    <p className="text-sm text-gray-600 mt-1 truncate">
-                      Symptoms: {item.symptoms.join(', ')}
-                    </p>
-                    <p className="text-xs font-medium text-green-600 mt-1">
-                      Top Prediction: {item.result.predictions[0]?.disease || 'N/A'}
-                    </p>
-                  </div>
-                ))
-              )}
-            </div>
-          </>
-        ) : (
-          <div className="text-center p-4 text-gray-500">
-            <p>Authenticating Firebase...</p>
-          </div>
-        )}
       </div>
     </div>
   );
@@ -1068,211 +948,138 @@ const PredictionPage = ({ db, auth, userId, authReady, appId }) => { // <-- Adde
 
 
 // =================================================================================
-// --- MAIN APP COMPONENT (CONTROLS PAGES & FIREBASE) ---
+// --- MAIN APP COMPONENT ---
 // =================================================================================
 
 const App = () => {
-  // Firebase States
   const [db, setDb] = useState(null);
   const [auth, setAuth] = useState(null);
-  const [userId, setUserId] = useState(null);
+  const [user, setUser] = useState(null);
+  const [userProfile, setUserProfile] = useState(null);
   const [authReady, setAuthReady] = useState(false);
-  const [appId, setAppId] = useState(null); // <-- NEW: State for appId
+  const [appId, setAppId] = useState(null);
+  const [currentPage, setCurrentPage] = useState('home');
+  const [unreadCount, setUnreadCount] = useState(0);
 
-  // Page Navigation State
-  const [currentPage, setCurrentPage] = useState('home'); // default page
-
-  // --- FIREBASE INITIALIZATION AND AUTH ---
   useEffect(() => {
     let isMounted = true;
-    
     try {
-      // --- MODIFICATION FOR VERCEL ---
-      // 1. Read the config from Vercel's Environment Variables
-      const env = (typeof import.meta !== 'undefined' && import.meta.env) ? import.meta.env : {};
-      const firebaseConfigStr = env.VITE_FIREBASE_CONFIG || '{}';
-      
-      // 2. We are on a public website, so we MUST sign in anonymously.
-      const initialAuthToken = null; 
-      // --- END OF MODIFICATION ---
-
-      // Basic check for valid config
-      if (firebaseConfigStr === '{}') {
-          console.error("Firebase config is missing or empty! Make sure VITE_FIREBASE_CONFIG is set in Vercel.");
-          return; // This will cause the app to hang on "Authenticating..."
-      }
-      
-      const firebaseConfig = JSON.parse(firebaseConfigStr);
-
-      if (!firebaseConfig.apiKey) {
-        console.error("Firebase config is missing apiKey! Check your VITE_FIREBASE_CONFIG.");
-        return; // This will also cause the app to hang.
-      }
-      
-      // --- CRITICAL FIX: Get appId from the config object ---
-      const newAppId = firebaseConfig.appId; 
-      if (!newAppId) {
-        console.error("Your firebaseConfig is missing the 'appId'!");
-        return;
-      }
-      // --- END CRITICAL FIX ---
-
+      const configStr = env.VITE_FIREBASE_CONFIG || '{}';
+      if (configStr === '{}') return;
+      const firebaseConfig = JSON.parse(configStr);
+      if (!firebaseConfig.apiKey || !firebaseConfig.appId) return;
 
       const app = initializeApp(firebaseConfig);
       const firestore = getFirestore(app);
-      setLogLevel('debug'); // As requested
       const firebaseAuth = getAuth(app);
       
       if (isMounted) {
-        setDb(firestore);
-        setAuth(firebaseAuth);
-        setAppId(newAppId); // <-- NEW: Set appId state
+        setDb(firestore); setAuth(firebaseAuth); setAppId(firebaseConfig.appId);
       }
 
-      const attemptAuth = async () => {
-        try {
-          if (initialAuthToken) {
-            // Removed signInWithCustomToken as it's not used in Vercel deployment setup
-            // await signInWithCustomToken(firebaseAuth, initialAuthToken);
-          } else {
-            await signInAnonymously(firebaseAuth);
-          }
-        } catch (e) {
-          console.error("Auth failed, attempting anonymous sign-in fallback:", e);
-          try {
-            await signInAnonymously(firebaseAuth);
-          } catch (eAnon) {
-            console.error("Anonymous sign-in fallback failed:", eAnon);
-          }
-        }
-      };
-      
-      attemptAuth();
-      
-      onAuthStateChanged(firebaseAuth, (user) => {
+      onAuthStateChanged(firebaseAuth, (authUser) => {
         if (!isMounted) return;
-        
-        if (user) {
-          console.log("Firebase Authentication SUCCESS. User ID:", user.uid);
-          setUserId(user.uid);
+        if (authUser) {
+          setUser(authUser);
         } else {
-          console.warn("Firebase Authentication FAILED. User is not signed in.");
-          setUserId(null);
+          setUser(null); setUserProfile(null); setAuthReady(true);
         }
-        // This is the line that removes the "Authenticating..." message.
-        setAuthReady(true);
       });
-      
     } catch (e) {
-      console.error("Firebase Initialization Failed (Overall Catch):", e);
-      if (isMounted) setAuthReady(true); // Continue with app functionality if Firebase fails
+      console.error("Firebase Init Failed:", e);
+      if (isMounted) setAuthReady(true);
     }
-    
     return () => { isMounted = false; };
   }, []);
 
-  // Page Rendering Logic
-  const renderPage = () => {
-    // This is where the animation class is applied
-    const pageContainerClasses = "h-full w-full"; // Page components handle their own animation now
+  // Listen to User Profile dynamically
+  useEffect(() => {
+    if (!user || !db || !appId) return;
+    const unsub = onSnapshot(doc(db, `artifacts/${appId}/all_users`, user.uid), (docSnap) => {
+      if (docSnap.exists()) {
+        const profileData = docSnap.data();
+        setUserProfile(profileData);
+        // Set default routing based on role
+        if (!userProfile) {
+           if (profileData.role === 'admin') setCurrentPage('admin-dashboard');
+           else if (profileData.role === 'doctor') setCurrentPage('doctor-dashboard');
+           else if (profileData.role === 'attender') setCurrentPage('attender-dashboard');
+           else setCurrentPage('home');
+        }
+      }
+      setAuthReady(true);
+    });
+    return () => unsub();
+  }, [user, db, appId]);
 
+  // Listen to Patient Notifications
+  useEffect(() => {
+    if (!user || !db || !appId || userProfile?.role !== 'patient') return;
+    const q = query(collection(db, `artifacts/${appId}/appointments`));
+    const unsub = onSnapshot(q, (snap) => {
+      const count = snap.docs.map(d=>d.data()).filter(a => a.patientId === user.uid && (a.status === 'scheduled' || a.status === 'ready' || a.status === 'completed')).length;
+      // Basic implementation for notification ping
+      setUnreadCount(count); 
+    });
+    return () => unsub();
+  }, [user, db, appId, userProfile]);
+
+  const handleLogout = async () => {
+    if (auth) {
+      await signOut(auth);
+      setUserProfile(null);
+      setCurrentPage('home');
+    }
+  };
+
+  if (!authReady) {
+    return <div className="h-screen w-screen flex items-center justify-center bg-gray-50"><div className="animate-pulse flex flex-col items-center"><Icon name="stethoscope" size={48} className="text-blue-500 mb-4" /><p className="text-blue-900 font-bold">Initializing HMIS...</p></div></div>;
+  }
+
+  // Route Logic Check
+  if (!user) {
+    return <AuthPage onAuthSuccess={setUser} db={db} auth={auth} appId={appId} />;
+  }
+
+  if (userProfile && userProfile.status === 'pending') {
+    return <PendingStatePage onLogout={handleLogout} />;
+  }
+
+  const renderPage = () => {
+    const pageProps = { db, auth, userId: user.uid, appId, authReady, userProfile };
+    
     switch (currentPage) {
-      case 'home':
-        return <div className={pageContainerClasses}><HomePage onNavigate={setCurrentPage} /></div>;
-      case 'prediction':
-        // PredictionPage is the only one that scrolls
-        // MODIFIED: Pass appId prop
-        return <div className={pageContainerClasses + " overflow-y-auto"}><PredictionPage db={db} auth={auth} userId={userId} authReady={authReady} appId={appId} /></div>;
-      case 'docbot':
-        // MODIFIED: Pass appId prop
-        return <div className={pageContainerClasses}><DocBotPage db={db} auth={auth} userId={userId} authReady={authReady} appId={appId} /></div>;
-      case 'hospitals':
-        return <div className={pageContainerClasses}><HospitalPage /></div>;
-      case 'contact':
-        return <div className={pageContainerClasses}><ContactPage /></div>;
-      default:
-        return <div className={pageContainerClasses}><HomePage onNavigate={setCurrentPage} /></div>;
+      case 'home': return <HomePage onNavigate={setCurrentPage} />;
+      case 'appointments': return <PatientAppointments {...pageProps} />;
+      case 'prediction': return <PredictionPage {...pageProps} />;
+      case 'docbot': return <DocBotPage {...pageProps} />;
+      case 'hospitals': return <HospitalPage />;
+      case 'profile': return <ProfilePage {...pageProps} />;
+      case 'contact': return <ContactPage />;
+      case 'attender-dashboard': return <AttenderDashboard {...pageProps} />;
+      case 'doctor-dashboard': return <DoctorDashboard {...pageProps} mode="active" />;
+      case 'doctor-history': return <DoctorDashboard {...pageProps} mode="history" />;
+      case 'admin-dashboard':
+      case 'admin-approvals':
+      case 'admin-users':
+      case 'admin-logs':
+         return <AdminDashboard {...pageProps} />;
+      default: return <HomePage onNavigate={setCurrentPage} />;
     }
   };
 
   return (
-    <div className="h-screen w-screen flex flex-col bg-gradient-to-br from-white to-blue-50 font-inter overflow-hidden">
-      {/* Global Styles & Animations */}
+    <div className="flex flex-col h-screen w-screen bg-gray-50 font-sans overflow-hidden">
       <style>{`
-        /* Page Fade-in */
-        @keyframes pageFadeIn {
-          from { opacity: 0; }
-          to { opacity: 1; }
-        }
-        
-        /* Element Fade-in-Up */
-        @keyframes fadeInUp {
-          from { opacity: 0; transform: translateY(20px); }
-          to { transform: translateY(0); opacity: 1; }
-        }
-        
-        /* Element Fade-in */
-        @keyframes fadeIn {
-          from { opacity: 0; }
-          to { opacity: 1; }
-        }
-
-        /* Typing dots for chatbot */
-        .dot-flashing {
-          position: relative;
-          width: 5px;
-          height: 5px;
-          border-radius: 5px;
-          background-color: #3b82f6;
-          color: #3b82f6;
-          animation: dotFlashing 1s infinite linear alternate;
-          animation-delay: 0s;
-          display: inline-block;
-        }
-        .dot-flashing::before, .dot-flashing::after {
-          content: "";
-          display: inline-block;
-          position: absolute;
-          top: 0;
-        }
-        .dot-flashing::before {
-          left: -8px;
-          width: 5px;
-          height: 5px;
-          border-radius: 5px;
-          background-color: #3b82f6;
-          color: #3b82f6;
-          animation: dotFlashing 1s infinite alternate;
-          animation-delay: 0.4s;
-        }
-        .dot-flashing::after {
-          left: 8px;
-          width: 5px;
-          height: 5px;
-          border-radius: 5px;
-          background-color: #3b82f6;
-          color: #3b82f6;
-          animation: dotFlashing 1s infinite alternate;
-          animation-delay: 0.8s;
-        }
-        @keyframes dotFlashing {
-          0% { opacity: 0.2; }
-          50% { opacity: 1; }
-          100% { opacity: 0.2; }
-        }
+        @keyframes fadeInUp { from { opacity: 0; transform: translateY(20px); } to { transform: translateY(0); opacity: 1; } }
       `}</style>
-      
-      <NavBar currentPage={currentPage} onNavigate={setCurrentPage} />
-      
-      {/* Main content area is hidden overflow. Scrolling is handled *inside* renderPage */}
-      <main className="flex-grow pt-16 overflow-hidden">
+      <NavBar currentPage={currentPage} onNavigate={setCurrentPage} userProfile={userProfile} onLogout={handleLogout} unreadCount={unreadCount} />
+      <main className="flex-grow overflow-y-auto relative">
         {renderPage()}
       </main>
-      
-      <Footer className="flex-shrink-0 z-10" />
+      <Footer />
     </div>
   );
 };
-
 
 export default App;
