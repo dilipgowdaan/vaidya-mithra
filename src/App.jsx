@@ -1565,7 +1565,7 @@ const AuthPage = ({ firebaseError, onLogin, onSignup }) => {
           <div className="flex items-center justify-between border-b border-gray-100 pb-4">
             <div>
               <div className="inline-flex items-center gap-2 rounded-full bg-blue-100 px-3 py-1 text-xs font-bold uppercase tracking-wider text-blue-800">
-                <span>⚡ Interviewer / Demo Access</span>
+                <span>⚡Demo Access</span>
               </div>
               <h2 className="mt-2 text-lg font-bold text-gray-900">
                 1-Click Role Login
