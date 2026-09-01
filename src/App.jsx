@@ -28,6 +28,49 @@ const env =
 const SUPER_ADMIN_EMAIL = "admin@gmail.com";
 const SUPER_ADMIN_PASSWORD = "Admin@123";
 
+const DEMO_ACCOUNTS = {
+  admin: {
+    role: "admin",
+    name: "Super Admin",
+    email: "admin@gmail.com",
+    password: "Admin@123",
+    badge: "Admin",
+    desc: "System analytics, staff approvals & audit logs",
+    icon: "users",
+    color: "from-purple-600 to-indigo-700",
+  },
+  doctor: {
+    role: "doctor",
+    name: "Dr. Arvind Rao",
+    email: "doctor.demo@vaidyamithra.com",
+    password: "Doctor@123",
+    badge: "Doctor",
+    desc: "OPD consult queue, clinical notes & prescription writer",
+    icon: "stethoscope",
+    color: "from-blue-600 to-cyan-600",
+  },
+  attender: {
+    role: "attender",
+    name: "Priya Sharma (Staff)",
+    email: "attender.demo@vaidyamithra.com",
+    password: "Attender@123",
+    badge: "Attender",
+    desc: "Patient check-ins, vital signs & queue coordination",
+    icon: "clipboard",
+    color: "from-emerald-600 to-teal-600",
+  },
+  patient: {
+    role: "patient",
+    name: "Rahul Verma",
+    email: "patient.demo@vaidyamithra.com",
+    password: "Patient@123",
+    badge: "Patient",
+    desc: "AI symptom triage, appointments & health guidance",
+    icon: "user",
+    color: "from-amber-600 to-orange-600",
+  },
+};
+
 const ROLE_LABELS = {
   patient: "Patient",
   doctor: "Doctor",
@@ -1343,6 +1386,7 @@ const Footer = () => (
 const AuthPage = ({ firebaseError, onLogin, onSignup }) => {
   const [mode, setMode] = useState("login");
   const [loading, setLoading] = useState(false);
+  const [demoRoleLoading, setDemoRoleLoading] = useState("");
   const [error, setError] = useState("");
   const [form, setForm] = useState({
     name: "",
@@ -1373,137 +1417,192 @@ const AuthPage = ({ firebaseError, onLogin, onSignup }) => {
     }
   };
 
+  const handleQuickLogin = async (roleKey) => {
+    const demo = DEMO_ACCOUNTS[roleKey];
+    if (!demo) return;
+    setError("");
+    setDemoRoleLoading(roleKey);
+    try {
+      await onLogin(demo.email, demo.password);
+    } catch (err) {
+      setError(err.message || `Failed to login as ${demo.name}`);
+    } finally {
+      setDemoRoleLoading("");
+    }
+  };
+
   return (
-    <div className="flex min-h-screen items-center justify-center bg-gradient-to-br from-blue-50 via-white to-green-50 px-4 py-8">
-      <Card className="relative w-full max-w-md overflow-hidden p-6 shadow-xl shadow-blue-100/60">
-        <div className="absolute inset-x-0 top-0 h-1 bg-gradient-to-r from-blue-700 via-cyan-500 to-emerald-500" />
-        <div className="mb-6 flex flex-col items-center gap-3 text-center">
-          <Logo />
-          <p className="text-xs font-bold uppercase tracking-wide text-blue-700">
-            Secure hospital access
-          </p>
-        </div>
-        <div className="mb-6 flex rounded-lg bg-gray-100 p-1">
-          <button
-            type="button"
-            onClick={() => setMode("login")}
-            className={`flex-1 rounded-md px-3 py-2 text-sm font-bold ${
-              mode === "login" ? "bg-white text-blue-800 shadow-sm" : "text-gray-600"
-            }`}
-          >
-            Sign in
-          </button>
-          <button
-            type="button"
-            onClick={() => setMode("signup")}
-            className={`flex-1 rounded-md px-3 py-2 text-sm font-bold ${
-              mode === "signup" ? "bg-white text-blue-800 shadow-sm" : "text-gray-600"
-            }`}
-          >
-            Sign up
-          </button>
+    <div className="flex min-h-screen flex-col items-center justify-center bg-gradient-to-br from-blue-50 via-white to-green-50 px-4 py-8">
+      <div className="w-full max-w-2xl space-y-6">
+        {/* ⚡ Quick 1-Click Interviewer Access Box */}
+        <div className="rounded-2xl border border-blue-200 bg-white p-6 shadow-xl shadow-blue-100/70">
+          <div className="flex items-center justify-between border-b border-gray-100 pb-4">
+            <div>
+              <div className="inline-flex items-center gap-2 rounded-full bg-blue-100 px-3 py-1 text-xs font-bold uppercase tracking-wider text-blue-800">
+                <span>⚡ Interviewer / Demo Access</span>
+              </div>
+              <h2 className="mt-2 text-lg font-bold text-gray-900">
+                1-Click Role Login
+              </h2>
+              <p className="text-xs text-gray-500">
+                Click any role to log in instantly with auto-approved demo credentials.
+              </p>
+            </div>
+          </div>
+
+          <div className="mt-4 grid gap-3 sm:grid-cols-2">
+            {Object.entries(DEMO_ACCOUNTS).map(([key, item]) => (
+              <button
+                key={key}
+                type="button"
+                disabled={loading || Boolean(demoRoleLoading)}
+                onClick={() => handleQuickLogin(key)}
+                className="group relative flex flex-col items-start rounded-xl border border-gray-200 bg-gray-50/80 p-3.5 text-left transition hover:border-blue-400 hover:bg-blue-50/50 hover:shadow-md disabled:opacity-50"
+              >
+                <div className="flex w-full items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <div className="grid h-8 w-8 place-items-center rounded-lg bg-blue-100 text-blue-800 transition group-hover:bg-blue-600 group-hover:text-white">
+                      <Icon name={item.icon} size={16} />
+                    </div>
+                    <span className="font-bold text-gray-900">{item.badge}</span>
+                  </div>
+                  <span className="rounded bg-blue-100 px-2 py-0.5 text-[10px] font-bold text-blue-800 group-hover:bg-blue-200">
+                    {demoRoleLoading === key ? "Logging in..." : "Instant Login →"}
+                  </span>
+                </div>
+                <p className="mt-2 text-xs leading-relaxed text-gray-600">
+                  {item.desc}
+                </p>
+                <span className="mt-1 text-[11px] font-mono text-gray-400">
+                  {item.email}
+                </span>
+              </button>
+            ))}
+          </div>
         </div>
 
-        <form className="space-y-4" onSubmit={submit}>
-          {mode === "signup" ? (
-            <Field label="Full name">
+        {/* Standard Email / Password Form */}
+        <Card className="relative w-full overflow-hidden p-6 shadow-xl shadow-blue-100/60">
+          <div className="absolute inset-x-0 top-0 h-1 bg-gradient-to-r from-blue-700 via-cyan-500 to-emerald-500" />
+          <div className="mb-6 flex flex-col items-center gap-2 text-center">
+            <Logo />
+            <p className="text-xs font-bold uppercase tracking-wide text-gray-500">
+              Or sign in with custom credentials
+            </p>
+          </div>
+
+          <div className="mb-6 flex rounded-lg bg-gray-100 p-1">
+            <button
+              type="button"
+              onClick={() => setMode("login")}
+              className={`flex-1 rounded-md px-3 py-2 text-sm font-bold ${
+                mode === "login" ? "bg-white text-blue-800 shadow-sm" : "text-gray-600"
+              }`}
+            >
+              Sign in
+            </button>
+            <button
+              type="button"
+              onClick={() => setMode("signup")}
+              className={`flex-1 rounded-md px-3 py-2 text-sm font-bold ${
+                mode === "signup" ? "bg-white text-blue-800 shadow-sm" : "text-gray-600"
+              }`}
+            >
+              Sign up
+            </button>
+          </div>
+
+          <form className="space-y-4" onSubmit={submit}>
+            {mode === "signup" ? (
+              <Field label="Full name">
+                <Input
+                  required
+                  value={form.name}
+                  onChange={(event) => update("name", event.target.value)}
+                  placeholder="Enter full name"
+                />
+              </Field>
+            ) : null}
+
+            <Field label="Email">
               <Input
                 required
-                value={form.name}
-                onChange={(event) => update("name", event.target.value)}
-                placeholder="Enter full name"
+                type="email"
+                value={form.email}
+                onChange={(event) => update("email", event.target.value)}
+                placeholder="you@example.com"
               />
             </Field>
-          ) : null}
 
-          <Field label="Email">
-            <Input
-              required
-              type="email"
-              value={form.email}
-              onChange={(event) => update("email", event.target.value)}
-              placeholder="you@example.com"
-            />
-          </Field>
+            <Field label="Password">
+              <Input
+                required
+                type="password"
+                value={form.password}
+                onChange={(event) => update("password", event.target.value)}
+                placeholder="At least 6 characters"
+              />
+            </Field>
 
-          <Field label="Password">
-            <Input
-              required
-              type="password"
-              minLength={6}
-              value={form.password}
-              onChange={(event) => update("password", event.target.value)}
-              placeholder="Minimum 6 characters"
-            />
-          </Field>
+            {mode === "signup" ? (
+              <>
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <Field label="Phone number">
+                    <Input
+                      value={form.phone}
+                      onChange={(event) => update("phone", event.target.value)}
+                      placeholder="+91..."
+                    />
+                  </Field>
+                  <Field label="Age">
+                    <Input
+                      type="number"
+                      min="0"
+                      value={form.age}
+                      onChange={(event) => update("age", event.target.value)}
+                    />
+                  </Field>
+                </div>
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <Field label="Gender">
+                    <Select
+                      value={form.gender}
+                      onChange={(event) => update("gender", event.target.value)}
+                    >
+                      <option value="">Select</option>
+                      <option value="Female">Female</option>
+                      <option value="Male">Male</option>
+                      <option value="Non-binary">Non-binary</option>
+                      <option value="Prefer not to say">Prefer not to say</option>
+                    </Select>
+                  </Field>
+                  <Field label="Role">
+                    <Select
+                      value={form.role}
+                      onChange={(event) => update("role", event.target.value)}
+                    >
+                      <option value="patient">Patient</option>
+                      <option value="doctor">Doctor</option>
+                      <option value="attender">Attender</option>
+                      <option value="admin">Admin</option>
+                    </Select>
+                  </Field>
+                </div>
+              </>
+            ) : null}
 
-          {mode === "signup" ? (
-            <>
-              <div className="grid gap-4 sm:grid-cols-2">
-                <Field label="Phone number">
-                  <Input
-                    value={form.phone}
-                    onChange={(event) => update("phone", event.target.value)}
-                    placeholder="+91..."
-                  />
-                </Field>
-                <Field label="Age">
-                  <Input
-                    type="number"
-                    min="0"
-                    value={form.age}
-                    onChange={(event) => update("age", event.target.value)}
-                  />
-                </Field>
+            {firebaseError || error ? (
+              <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+                {firebaseError || error}
               </div>
-              <div className="grid gap-4 sm:grid-cols-2">
-                <Field label="Gender">
-                  <Select
-                    value={form.gender}
-                    onChange={(event) => update("gender", event.target.value)}
-                  >
-                    <option value="">Select</option>
-                    <option value="Female">Female</option>
-                    <option value="Male">Male</option>
-                    <option value="Non-binary">Non-binary</option>
-                    <option value="Prefer not to say">Prefer not to say</option>
-                  </Select>
-                </Field>
-                <Field label="Role">
-                  <Select
-                    value={form.role}
-                    onChange={(event) => update("role", event.target.value)}
-                  >
-                    <option value="patient">Patient</option>
-                    <option value="doctor">Doctor</option>
-                    <option value="attender">Attender</option>
-                    <option value="admin">Admin</option>
-                  </Select>
-                </Field>
-              </div>
-              <p className="rounded-lg bg-amber-50 p-3 text-xs leading-5 text-amber-800">
-                Patients are auto-approved. Doctors, attenders, and additional
-                admins remain pending until an approved admin confirms them.
-              </p>
-            </>
-          ) : (
-            <p className="rounded-lg bg-blue-50 p-3 text-xs leading-5 text-blue-800">
-              Super admin: use admin@gmail.com with Admin@123 to bootstrap the
-              admin dashboard and create the admin profile automatically.
-            </p>
-          )}
+            ) : null}
 
-          {firebaseError || error ? (
-            <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
-              {firebaseError || error}
-            </div>
-          ) : null}
-
-          <Button type="submit" loading={loading} className="w-full">
-            {mode === "login" ? "Sign in" : "Create account"}
-          </Button>
-        </form>
-      </Card>
+            <Button type="submit" loading={loading} className="w-full">
+              {mode === "login" ? "Sign in" : "Create account"}
+            </Button>
+          </form>
+        </Card>
+      </div>
     </div>
   );
 };
@@ -1550,6 +1649,9 @@ const PublicLandingPage = ({ onNavigate }) => (
       }}
     />
     <div className="relative z-10 mx-auto flex min-h-[calc(100vh-10rem)] max-w-5xl flex-col items-center justify-center text-center text-white">
+      <div className="mb-4 inline-flex items-center gap-2 rounded-full bg-white/20 px-4 py-1.5 text-sm font-semibold backdrop-blur-md">
+        <span>⚡ Interviewer Ready — 1-Click Demo Logins Available</span>
+      </div>
       <h1 className="text-4xl font-extrabold tracking-tight drop-shadow-lg md:text-6xl">
         Welcome to Vaidya Mithra
       </h1>
@@ -1560,8 +1662,16 @@ const PublicLandingPage = ({ onNavigate }) => (
       <div className="mt-8 flex flex-wrap justify-center gap-4">
         <button
           type="button"
+          onClick={() => onNavigate("login")}
+          className="inline-flex items-center gap-2 rounded-full bg-amber-400 px-8 py-3.5 text-base font-bold text-gray-950 shadow-xl transition hover:scale-105 hover:bg-amber-300"
+        >
+          <Icon name="users" size={20} />
+          ⚡ 1-Click Demo Login
+        </button>
+        <button
+          type="button"
           onClick={() => onNavigate("publicTriage")}
-          className="inline-flex items-center gap-2 rounded-full bg-green-500 px-7 py-3 text-base font-bold text-white shadow-xl transition hover:scale-105 hover:bg-green-600"
+          className="inline-flex items-center gap-2 rounded-full bg-green-500 px-7 py-3.5 text-base font-bold text-white shadow-xl transition hover:scale-105 hover:bg-green-600"
         >
           <Icon name="activity" size={20} />
           Free AI Check
@@ -1569,39 +1679,12 @@ const PublicLandingPage = ({ onNavigate }) => (
         <button
           type="button"
           onClick={() => onNavigate("publicHospitals")}
-          className="inline-flex items-center gap-2 rounded-full bg-white px-7 py-3 text-base font-bold text-blue-800 shadow-xl transition hover:scale-105 hover:bg-blue-50"
+          className="inline-flex items-center gap-2 rounded-full bg-white px-7 py-3.5 text-base font-bold text-blue-800 shadow-xl transition hover:scale-105 hover:bg-blue-50"
         >
           <Icon name="hospital" size={20} />
           Nearby Hospitals
         </button>
-        <button
-          type="button"
-          onClick={() => onNavigate("login")}
-          className="inline-flex items-center gap-2 rounded-full bg-blue-950 px-7 py-3 text-base font-bold text-white shadow-xl transition hover:scale-105 hover:bg-blue-900"
-        >
-          <Icon name="user" size={20} />
-          Login
-        </button>
       </div>
-    </div>
-
-    <div className="fixed bottom-6 right-6 z-20 flex flex-col gap-3 sm:right-8">
-      <button
-        type="button"
-        onClick={() => onNavigate("publicTriage")}
-        className="grid h-14 w-14 place-items-center rounded-full bg-green-500 text-white shadow-2xl transition hover:scale-110 hover:bg-green-600"
-        title="Free AI Check"
-      >
-        <Icon name="activity" size={24} />
-      </button>
-      <button
-        type="button"
-        onClick={() => onNavigate("login")}
-        className="grid h-14 w-14 place-items-center rounded-full bg-blue-950 text-white shadow-2xl transition hover:scale-110 hover:bg-blue-900"
-        title="Login"
-      >
-        <Icon name="user" size={24} />
-      </button>
     </div>
   </div>
 );
@@ -4462,23 +4545,26 @@ const App = () => {
     Boolean(db && appId && currentUser && profile?.role === "patient")
   );
 
-  const handleLogin = async (email, password) => {
+const handleLogin = async (email, password) => {
     if (!auth || !db || !appId) throw new Error("Firebase is not ready.");
 
-    if (isSuperAdminCredentials(email, password)) {
+    const normalized = normalizeEmail(email);
+
+    // Check if logging in with any Demo account or Super Admin
+    const matchedDemo = Object.values(DEMO_ACCOUNTS).find(
+      (acc) => normalizeEmail(acc.email) === normalized && acc.password === password
+    ) || (isSuperAdminCredentials(email, password) ? DEMO_ACCOUNTS.admin : null);
+
+    if (matchedDemo) {
       let credential;
       try {
-        credential = await signInWithEmailAndPassword(auth, normalizeEmail(email), password);
+        credential = await signInWithEmailAndPassword(auth, normalized, password);
       } catch (loginError) {
-        if (!["auth/user-not-found", "auth/invalid-credential"].includes(loginError.code)) {
+        if (!["auth/user-not-found", "auth/invalid-credential", "auth/wrong-password"].includes(loginError.code)) {
           throw loginError;
         }
         try {
-          credential = await createUserWithEmailAndPassword(
-            auth,
-            normalizeEmail(email),
-            password
-          );
+          credential = await createUserWithEmailAndPassword(auth, normalized, password);
         } catch (createError) {
           if (createError.code && createError.code !== "auth/email-already-in-use") {
             throw createError;
@@ -4487,26 +4573,28 @@ const App = () => {
         }
       }
 
-      await updateProfile(credential.user, { displayName: "Super Admin" }).catch(() => {});
+      await updateProfile(credential.user, { displayName: matchedDemo.name }).catch(() => {});
       await ensureGlobalProfile(db, appId, credential.user, {
-        name: "Super Admin",
-        role: "admin",
+        name: matchedDemo.name,
+        role: matchedDemo.role,
         status: "approved",
       });
+
       await writeAuditLog(
         db,
         appId,
-        { uid: credential.user.uid, name: "Super Admin", role: "admin", email: credential.user.email },
-        "super_admin_bootstrap",
+        { uid: credential.user.uid, name: matchedDemo.name, role: matchedDemo.role, email: credential.user.email },
+        "demo_login_bootstrap",
         "user",
         credential.user.uid,
-        { email: credential.user.email }
+        { role: matchedDemo.role, email: credential.user.email }
       );
-      setPage("adminDashboard");
+
+      setPage(defaultPageForRole(matchedDemo.role));
       return;
     }
 
-    await signInWithEmailAndPassword(auth, normalizeEmail(email), password);
+    await signInWithEmailAndPassword(auth, normalized, password);
   };
 
   const handleSignup = async (form) => {
