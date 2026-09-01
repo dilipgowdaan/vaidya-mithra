@@ -1434,6 +1434,37 @@ const AuthPage = ({ firebaseError, onLogin, onSignup }) => {
   return (
     <div className="flex min-h-screen flex-col items-center justify-center bg-gradient-to-br from-blue-50 via-white to-green-50 px-4 py-8">
       <div className="w-full max-w-2xl space-y-6">
+                {/* Standard Email / Password Form */}
+        <Card className="relative w-full overflow-hidden p-6 shadow-xl shadow-blue-100/60">
+          <div className="absolute inset-x-0 top-0 h-1 bg-gradient-to-r from-blue-700 via-cyan-500 to-emerald-500" />
+          <div className="mb-6 flex flex-col items-center gap-2 text-center">
+            <Logo />
+            <p className="text-xs font-bold uppercase tracking-wide text-gray-500">
+              Or sign in with custom credentials
+            </p>
+          </div>
+
+          <div className="mb-6 flex rounded-lg bg-gray-100 p-1">
+            <button
+              type="button"
+              onClick={() => setMode("login")}
+              className={`flex-1 rounded-md px-3 py-2 text-sm font-bold ${
+                mode === "login" ? "bg-white text-blue-800 shadow-sm" : "text-gray-600"
+              }`}
+            >
+              Sign in
+            </button>
+            <button
+              type="button"
+              onClick={() => setMode("signup")}
+              className={`flex-1 rounded-md px-3 py-2 text-sm font-bold ${
+                mode === "signup" ? "bg-white text-blue-800 shadow-sm" : "text-gray-600"
+              }`}
+            >
+              Sign up
+            </button>
+          </div>
+          
         {/* ⚡ Quick 1-Click Interviewer Access Box */}
         <div className="rounded-2xl border border-blue-200 bg-white p-6 shadow-xl shadow-blue-100/70">
           <div className="flex items-center justify-between border-b border-gray-100 pb-4">
@@ -1649,9 +1680,7 @@ const PublicLandingPage = ({ onNavigate }) => (
       }}
     />
     <div className="relative z-10 mx-auto flex min-h-[calc(100vh-10rem)] max-w-5xl flex-col items-center justify-center text-center text-white">
-      <div className="mb-4 inline-flex items-center gap-2 rounded-full bg-white/20 px-4 py-1.5 text-sm font-semibold backdrop-blur-md">
-        <span>⚡ Interviewer Ready — 1-Click Demo Logins Available</span>
-      </div>
+
       <h1 className="text-4xl font-extrabold tracking-tight drop-shadow-lg md:text-6xl">
         Welcome to Vaidya Mithra
       </h1>
@@ -2359,24 +2388,14 @@ const PatientAppointmentsPage = ({ db, appId, profile }) => {
 
 const HospitalsPage = () => {
   const hospitals = [
-    {
-      name: "City General Hospital",
-      type: "Emergency and Critical Care",
-      phone: "+91 080 1000 2000",
-      address: "Main Road, Central District",
-    },
+
     {
       name: "Vaidya Mithra Clinic",
       type: "Primary Care and Diagnostics",
-      phone: "+91 080 2222 3030",
-      address: "Health Avenue, South Block",
+      phone: "+91 7259447817",
+      address: "Bengaluru",
     },
-    {
-      name: "Metro Cardiac Center",
-      type: "Cardiology and ICU",
-      phone: "+91 080 3333 4545",
-      address: "Ring Road, East Zone",
-    },
+
   ];
 
   return (
