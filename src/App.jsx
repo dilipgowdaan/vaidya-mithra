@@ -1541,6 +1541,10 @@ const AuthPage = ({ firebaseError, onLogin, onSignup }) => {
                     </Select>
                   </Field>
                 </div>
+                 <p className="rounded-lg bg-amber-50 p-3 text-xs leading-5 text-amber-800">
+                Patients are auto-approved. Doctors, attenders, and additional
+                admins remain pending until an approved admin confirms them.
+              </p>
               </>
             ) : null}
 
